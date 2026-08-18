@@ -87,21 +87,14 @@ def resolve_ticker_filter(cfg):
                 df = pd.read_csv(file_path, encoding="utf-8-sig")
                 col = None
                 for c in df.columns:
-                    if str(c).strip().lower() in (
-                        "symbol",
-                        "ticker",
-                        "tickers",
-                        "symbols",
-                    ):
+                    if str(c).strip().lower() in ("symbol", "ticker", "tickers", "symbols"):
                         col = c
                         break
                 if col is not None:
                     tickers.update(df[col].astype(str).str.strip().str.upper())
                 else:
-                    # no recognizable header -> treat first column as the list
                     tickers.update(df.iloc[:, 0].astype(str).str.strip().str.upper())
             except Exception:
-                # fall back to plain text, one ticker per line
                 with open(file_path) as f:
                     tickers.update(line.strip().upper() for line in f if line.strip())
 
@@ -227,11 +220,11 @@ def main(cfg):
     os.makedirs(cfg["output_dir"], exist_ok=True)
     engine = get_db_engine(cfg["db_url"])
     as_of_date = cfg.get("as_of_date")
+    start_date = cfg.get("start_date")
+    end_date = cfg.get("end_date")
     ticker_filter = resolve_ticker_filter(cfg)
     if ticker_filter:
-        print(
-            f"Ticker filter active: restricting scan to {len(ticker_filter)} supplied tickers."
-        )
+        print(f"Ticker filter active: restricting scan to {len(ticker_filter)} supplied tickers.")
 
     for market_label, m_cfg in cfg["markets"].items():
         index_symbol_id = m_cfg["index_symbol_id"]
@@ -240,26 +233,14 @@ def main(cfg):
         print(
             f"\n=== Live Signal Scan: {market_label} (index_symbol_id={index_symbol_id}) ==="
         )
-        universe = load_universe_from_db(engine, index_symbol_id)
+        universe = load_universe_from_db(engine, index_symbol_id, start_date, end_date)
         if not universe:
             print(f"  no DB records found for index {index_symbol_id}, skipping.")
             continue
 
-        if ticker_filter:
-            found_now = {t.upper() for t in universe.keys()} & ticker_filter
-            missing = ticker_filter - {t.upper() for t in universe.keys()}
-            if missing:
-                print(
-                    f"  [warn] not found in this market's data folder: {sorted(missing)}"
-                )
-            print(
-                f"  ticker filter: {len(found_now)}/{len(ticker_filter)} requested tickers "
-                f"present -> will compute RS against the FULL universe, then restrict scan to these."
-            )
-
         index_return_series = None
         market_health = None
-        idx_df = load_benchmark_from_db(engine, benchmark_symbol_id)
+        idx_df = load_benchmark_from_db(engine, benchmark_symbol_id, start_date, end_date)
         if idx_df is not None and not idx_df.empty:
             index_return_series = compute_index_weighted_return(idx_df)
             market_health = compute_market_health(idx_df, cfg)
@@ -275,23 +256,19 @@ def main(cfg):
             avgvol = universe[t]["AvgVol50"].mean()
             if pd.isna(avgvol) or avgvol < cfg["min_avg_volume"]:
                 del universe[t]
-        # NOW apply the ticker shortlist, AFTER RS rank was computed against
-        # the full universe -- filtering earlier would make RS_rank a
-        # percentile within just the shortlist, which is meaningless for a
-        # handful of names. Liquidity filtering above can still legitimately
-        # drop a requested ticker if it's genuinely too illiquid to trade.
+
+        # Apply the ticker shortlist AFTER RS rank was computed against the
+        # full universe -- filtering earlier would make RS_rank a percentile
+        # within just the shortlist, meaningless for a handful of names.
         if ticker_filter:
-            universe = {
-                t: df for t, df in universe.items() if t.upper() in ticker_filter
-            }
-            print(
-                f"  scanning {len(universe)} of {len(ticker_filter)} requested tickers "
-                f"(others excluded by liquidity filter or not found)"
-            )
+            missing = ticker_filter - {t.upper() for t in universe.keys()}
+            if missing:
+                print(f"  [warn] not found in this market's DB data: {sorted(missing)}")
+            universe = {t: df for t, df in universe.items() if t.upper() in ticker_filter}
+            print(f"  scanning {len(universe)} of {len(ticker_filter)} requested tickers "
+                  f"(others excluded by liquidity filter or not found)")
             if not universe:
-                print(
-                    f"  none of the requested tickers survived filtering in {data_dir}, skipping."
-                )
+                print(f"  none of the requested tickers survived filtering for {market_label}, skipping.")
                 continue
 
         if as_of_date:

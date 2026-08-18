@@ -151,6 +151,67 @@ DEFAULT_CONFIG = {
 # ----------------------------------------------------------------------
 
 
+# ----------------------------------------------------------------------
+# SPLIT DETECTION (safety net -- the DB path has no Adj Close column to
+# reconcile against, unlike the original CSV loader, so this is the ONLY
+# protection against a stock split masquerading as a huge one-day crash/
+# rally. Verify your DB's ingestion pipeline already stores split-adjusted
+# prices upstream if possible -- this is a safety net, not a substitute.)
+# ----------------------------------------------------------------------
+
+_SPLIT_RATIOS = sorted(set([1 / n for n in (2, 3, 4, 5, 7, 10, 15, 20, 25)] + [2, 3, 4, 5, 7, 10]))
+
+
+def _detect_and_adjust_unadjusted_splits(df, label, open_tol=0.04, close_tol=0.06):
+    """
+    Detects large overnight jumps whose ratio (confirmed on BOTH the
+    Open/PrevClose gap AND the Close/PrevClose move) lands close to a
+    common split ratio, then back-adjusts all OHLC prior to that date.
+    Ordinary large one-day moves (earnings crashes, etc.) essentially
+    never match a clean split ratio on both checks at once, so this is a
+    fairly safe automatic filter -- but every detection is printed so you
+    can verify it against the actual corporate action.
+    """
+    if len(df) < 3:
+        return df
+    close = df["Close"].values
+    open_ = df["Open"].values
+    n = len(df)
+    detections = []
+
+    for i in range(1, n):
+        prev_close = close[i - 1]
+        if prev_close == 0 or pd.isna(prev_close) or pd.isna(close[i]):
+            continue
+        close_ratio = close[i] / prev_close
+        if 0.6 < close_ratio < 1.6:
+            continue
+        open_ratio = open_[i] / prev_close if prev_close else np.nan
+        best = min(_SPLIT_RATIOS, key=lambda c: abs(c - close_ratio))
+        if abs(close_ratio - best) / best <= close_tol and abs(open_ratio - best) / best <= open_tol:
+            detections.append((i, best))
+
+    if not detections:
+        return df
+
+    mult = np.ones(n)
+    for i, ratio in detections:
+        mult[:i] *= ratio
+
+    df = df.copy()
+    for c in ["Open", "High", "Low", "Close"]:
+        df[c] = df[c] * mult
+
+    for i, ratio in detections:
+        approx_n = round(1 / ratio) if ratio < 1 else round(ratio)
+        kind = f"{approx_n}-for-1 split" if ratio < 1 else f"1-for-{approx_n} reverse split"
+        print(f"  [note] {label}: detected likely {kind} on {df['Date'].iloc[i].date()} "
+              f"(ratio {ratio:.4f}) -> back-adjusted prior prices. Verify against the "
+              f"actual corporate action if this matters for your analysis.")
+
+    return df
+
+
 def get_db_engine(db_url: str):
     return create_engine(db_url)
 
@@ -202,6 +263,7 @@ def load_universe_from_db(engine, index_symbol_id: int, start_date=None, end_dat
             .reset_index(drop=True)
         )
         if len(df) >= 260:  # ~1 year history minimum for technicals
+            df = _detect_and_adjust_unadjusted_splits(df, ticker)
             universe[ticker] = df
 
     return universe
@@ -241,7 +303,8 @@ def load_benchmark_from_db(
         return None
 
     df["Date"] = pd.to_datetime(df["Date"])
-    return df.sort_values("Date").drop_duplicates(subset="Date").reset_index(drop=True)
+    df = df.sort_values("Date").drop_duplicates(subset="Date").reset_index(drop=True)
+    return _detect_and_adjust_unadjusted_splits(df, f"benchmark_symbol_id={benchmark_symbol_id}")
 
 
 # ----------------------------------------------------------------------
@@ -790,6 +853,37 @@ def print_summary_stats(stats, market_label):
         print(f"  Profit factor        : {stats['profit_factor']:.2f}")
 
 
+def save_trade_log_by_year(trade_log, output_dir, market_label):
+    """Writes one trade-log CSV per year plus a combined _ALL file, so
+    results survive after the console output is gone."""
+    if not trade_log:
+        print(f"[{market_label}] no trades generated.")
+        return
+    rows = []
+    for tr in trade_log:
+        rows.append({
+            "Ticker": tr.ticker,
+            "EntryDate": tr.entry_date.date(),
+            "EntryPrice": round(tr.entry_price, 2),
+            "Shares": tr.shares,
+            "ExitDate": tr.exit_date.date(),
+            "ExitPrice": round(tr.exit_price, 2),
+            "ExitReason": tr.exit_reason,
+            "PnL": round(tr.pnl, 2),
+            "PnL_Pct": round(tr.pnl_pct, 2),
+        })
+    df = pd.DataFrame(rows)
+    df["Year"] = pd.to_datetime(df["ExitDate"]).dt.year
+    os.makedirs(output_dir, exist_ok=True)
+    for year, ydf in df.groupby("Year"):
+        path = os.path.join(output_dir, f"trade_log_{market_label}_{year}.csv")
+        ydf.drop(columns="Year").to_csv(path, index=False)
+        print(f"  wrote {path} ({len(ydf)} trades)")
+    combined_path = os.path.join(output_dir, f"trade_log_{market_label}_ALL.csv")
+    df.drop(columns="Year").to_csv(combined_path, index=False)
+    print(f"  wrote {combined_path} ({len(df)} trades total)")
+
+
 def main(cfg):
     os.makedirs(cfg["output_dir"], exist_ok=True)
     engine = get_db_engine(cfg["db_url"])
@@ -832,6 +926,21 @@ def main(cfg):
             trade_log, equity_curve, cfg, final_cash, bank_balance
         )
         print_summary_stats(stats, market_label)
+
+        # --- persist results to disk (was silently missing in this DB-driven
+        # version -- without this, everything above only ever lived in the
+        # console and was lost the moment the terminal closed) ---
+        save_trade_log_by_year(trade_log, cfg["output_dir"], market_label)
+        equity_curve_path = os.path.join(cfg["output_dir"], f"equity_curve_{market_label}.csv")
+        equity_curve.to_csv(equity_curve_path, index=False)
+        print(f"  wrote {equity_curve_path}")
+        stats_out = {k: (None if isinstance(v, float) and v != v else v) for k, v in stats.items()}
+        stats_out["hard_stop_pct"] = cfg.get("hard_stop_pct")
+        stats_out["reinvest_fraction"] = cfg.get("reinvest_fraction", 1.0)
+        summary_path = os.path.join(cfg["output_dir"], f"summary_{market_label}.json")
+        with open(summary_path, "w") as f:
+            json.dump(stats_out, f, indent=2, default=str)
+        print(f"  wrote {summary_path}")
 
 
 if __name__ == "__main__":
