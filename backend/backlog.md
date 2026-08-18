@@ -1,0 +1,1 @@
+make indicator params configurable

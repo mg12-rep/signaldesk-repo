@@ -1,0 +1,76 @@
+ALKEM	2025-11-26	2026-01-13	BB Upper Reversal	3.861484392
+ALKEM	2025-11-26	2026-01-13	BB Upper Reversal	3.861484392
+
+
+=(E2*$F$1%)+$F$1
+=F2-$F$1
+
+
+with 3% stoploss and no markethealthy check
+2022 - 86651.17965
+2023 - 565571.7786
+2024 - 304263.3695
+2025 - 36485.79771
+2026 - -34385.28642
+
+
+with 3% stoploss and markethealthy check
+2022 - 78922
+2023 - 569744
+2024 - 310764
+2025 - -19221
+2026 - -26757
+
+
+Here are the resuts with 5% stoploss and 3% stoploss. Loss is in brackets.
+
+MACD crossunder with 5% stoploss:
+
+2022 - 121706.9375
+2023 - 717711.499
+2024 - 685991.258
+2025 - (-103480.1759)
+2026 - (-6625.717281)
+
+
+
+MACD crossunder with 3% stoploss:
+
+2022 - 113754
+2023 - 595509.0265
+2024 - 554497.1409
+2025 - (-130906.5229)
+2026 - 11970.55356
+
+
+
+Here are the resuts with 5% stoploss and 3% stoploss. Loss is in brackets.
+
+ATR Bands crossunder with 5% stoploss:
+
+2022 - 11997.01975
+2023 - 204212.331
+2024 - 3243473.979
+2025 - (-199359.7681)
+2026 - 37301.97868
+
+ATR Bands crossunder with 3% stoploss:
+
+2022 - (-20569.03473)
+2023 - 96951.49475
+2024 - 2983086.146
+2025 - -197814.6928
+2026 - 70671.13103
+
+Dynamic regime 5% stoploss:
+
+2022: 187075
+2023: 694664
+2024: 1872641
+2025: -74664
+2026: 1353
+
+
+
+
+

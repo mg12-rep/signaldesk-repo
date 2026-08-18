@@ -1,0 +1,21 @@
+# Python bytecode & environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Database credentials & local configs
+# (Keep a config.example.json in git instead of your live credentials)
+config.json
+
+# Generated outputs & logs
+output/
+*.csv
+*.log
+*.zip
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
