@@ -229,36 +229,67 @@ def get_db_engine(db_url: str):
     return create_engine(db_url)
 
 
-def load_universe_from_db(engine, index_symbol_id: int, start_date=None, end_date=None):
+def load_universe_from_db(
+    engine,
+    index_symbol_id=None,
+    exchange_id=None,
+    start_date=None,
+    end_date=None,
+):
     """
-    Loads all constituent stock OHLCV bars for a given index_symbol_id.
-    Returns: dict[trading_symbol] = DataFrame (Date, Open, High, Low, Close, Volume)
+    Loads OHLCV bars from DB:
+      - If index_symbol_id is provided: loads constituent stocks of that index.
+      - If exchange_id is provided (and index_symbol_id is None): loads ALL stocks for that exchange.
     """
     date_filter = ""
-    params = {"index_symbol_id": index_symbol_id}
+    params = {}
+
     if start_date:
         date_filter += " AND b.date >= :start_date"
         params["start_date"] = pd.Timestamp(start_date)
     if end_date:
         date_filter += " AND b.date <= :end_date"
         params["end_date"] = pd.Timestamp(end_date)
-    query = text(f"""
-        SELECT 
-            s.trading_symbol,
-            b.date AS "Date",
-            b.open AS "Open",
-            b.high AS "High",
-            b.low AS "Low",
-            b.close AS "Close",
-            b.volume AS "Volume"
-        FROM index_constituents ic
-        JOIN symbols s ON ic.stock_symbol_id = s.id
-        JOIN market_data_all b ON b.symbol_id = s.id
-        WHERE ic.index_symbol_id = :index_symbol_id
-        {date_filter}
-        ORDER BY s.trading_symbol, b.date ASC
-    """)
-    print(query)
+
+    if index_symbol_id is not None:
+        params["index_symbol_id"] = index_symbol_id
+        query = text(f"""
+            SELECT 
+                s.trading_symbol,
+                b.date AS "Date",
+                b.open AS "Open",
+                b.high AS "High",
+                b.low AS "Low",
+                b.close AS "Close",
+                b.volume AS "Volume"
+            FROM index_constituents ic
+            JOIN symbols s ON ic.stock_symbol_id = s.id
+            JOIN market_data_all b ON b.symbol_id = s.id
+            WHERE ic.index_symbol_id = :index_symbol_id
+            {date_filter}
+            ORDER BY s.trading_symbol, b.date ASC
+        """)
+    elif exchange_id is not None:
+        params["exchange_id"] = exchange_id
+        query = text(f"""
+            SELECT 
+                s.trading_symbol,
+                b.date AS "Date",
+                b.open AS "Open",
+                b.high AS "High",
+                b.low AS "Low",
+                b.close AS "Close",
+                b.volume AS "Volume"
+            FROM symbols s
+            JOIN market_data_all b ON b.symbol_id = s.id
+            WHERE s.exchange_id = :exchange_id
+            {date_filter}
+            ORDER BY s.trading_symbol, b.date ASC
+        """)
+    else:
+        raise ValueError(
+            "Either index_symbol_id or exchange_id must be provided to load the universe."
+        )
 
     with engine.connect() as conn:
         df_all = pd.read_sql(query, conn, params=params)
@@ -275,7 +306,7 @@ def load_universe_from_db(engine, index_symbol_id: int, start_date=None, end_dat
             .drop_duplicates(subset="Date")
             .reset_index(drop=True)
         )
-        if len(df) >= 260:  # ~1 year history minimum for technicals
+        if len(df) >= 260:
             df = _detect_and_adjust_unadjusted_splits(df, ticker)
             universe[ticker] = df
 

@@ -235,21 +235,35 @@ def main(cfg):
         )
 
     for market_label, m_cfg in cfg["markets"].items():
-        index_symbol_id = m_cfg["index_symbol_id"]
-        benchmark_symbol_id = m_cfg.get("benchmark_symbol_id", index_symbol_id)
+        index_symbol_id = m_cfg.get("index_symbol_id")
+        exchange_id = m_cfg.get("exchange_id")
+        benchmark_symbol_id = m_cfg.get("benchmark_symbol_id", index_symbol_id or 1)
 
-        print(
-            f"\n=== Live Signal Scan: {market_label} (index_symbol_id={index_symbol_id}) ==="
+        label_id = (
+            f"index_symbol_id={index_symbol_id}"
+            if index_symbol_id is not None
+            else f"exchange_id={exchange_id}"
         )
-        universe = load_universe_from_db(engine, index_symbol_id, start_date, end_date)
+        print(f"\n=== Live Signal Scan: {market_label} ({label_id}) ===")
+
+        universe = load_universe_from_db(
+            engine,
+            index_symbol_id=index_symbol_id,
+            exchange_id=exchange_id,
+            start_date=start_date,
+            end_date=end_date,
+        )
         if not universe:
-            print(f"  no DB records found for index {index_symbol_id}, skipping.")
+            print(f"  no DB records found for {label_id}, skipping.")
             continue
 
         index_return_series = None
         market_health = None
         idx_df = load_benchmark_from_db(
-            engine, benchmark_symbol_id, start_date, end_date
+            engine,
+            benchmark_symbol_id=benchmark_symbol_id,
+            start_date=start_date,
+            end_date=end_date,
         )
         if idx_df is not None and not idx_df.empty:
             index_return_series = compute_index_weighted_return(idx_df)
