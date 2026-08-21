@@ -97,13 +97,15 @@ Loads index constituents and daily OHLCV series directly from the database
 instead of per-ticker CSV directories.
 
 Run:
-    python minervini_backtest.py --config config.json
+    python enhanced_minervini_backtest.py --config config_snp.json|config_nifty.json|config_nasdaq.json
 """
 
 
 # ----------------------------------------------------------------------
 # CONFIG DEFAULTS
 # ----------------------------------------------------------------------
+# Add ticker file
+# /*"ticker_filter_file": "C:/Work/SignalDesk-docs/fundamental_filtered_stocks.csv"*/
 
 DEFAULT_CONFIG = {
     "db_url": "postgresql://postgres:postgres@localhost:5432/signaldesk",
@@ -131,7 +133,7 @@ DEFAULT_CONFIG = {
     "volume_mult": 1.25,
     # Risk / exits
     "risk_pct_per_trade": 0.025,
-    "hard_stop_pct": 0.05,
+    "hard_stop_pct": 0.08,
     "trailing_stop_pct": 0.08,
     "profit_targets": [[0.20, 0.5]],
     "post_profit_trailing_stop_pct": None,
@@ -159,7 +161,9 @@ DEFAULT_CONFIG = {
 # prices upstream if possible -- this is a safety net, not a substitute.)
 # ----------------------------------------------------------------------
 
-_SPLIT_RATIOS = sorted(set([1 / n for n in (2, 3, 4, 5, 7, 10, 15, 20, 25)] + [2, 3, 4, 5, 7, 10]))
+_SPLIT_RATIOS = sorted(
+    set([1 / n for n in (2, 3, 4, 5, 7, 10, 15, 20, 25)] + [2, 3, 4, 5, 7, 10])
+)
 
 
 def _detect_and_adjust_unadjusted_splits(df, label, open_tol=0.04, close_tol=0.06):
@@ -188,7 +192,10 @@ def _detect_and_adjust_unadjusted_splits(df, label, open_tol=0.04, close_tol=0.0
             continue
         open_ratio = open_[i] / prev_close if prev_close else np.nan
         best = min(_SPLIT_RATIOS, key=lambda c: abs(c - close_ratio))
-        if abs(close_ratio - best) / best <= close_tol and abs(open_ratio - best) / best <= open_tol:
+        if (
+            abs(close_ratio - best) / best <= close_tol
+            and abs(open_ratio - best) / best <= open_tol
+        ):
             detections.append((i, best))
 
     if not detections:
@@ -204,10 +211,16 @@ def _detect_and_adjust_unadjusted_splits(df, label, open_tol=0.04, close_tol=0.0
 
     for i, ratio in detections:
         approx_n = round(1 / ratio) if ratio < 1 else round(ratio)
-        kind = f"{approx_n}-for-1 split" if ratio < 1 else f"1-for-{approx_n} reverse split"
-        print(f"  [note] {label}: detected likely {kind} on {df['Date'].iloc[i].date()} "
-              f"(ratio {ratio:.4f}) -> back-adjusted prior prices. Verify against the "
-              f"actual corporate action if this matters for your analysis.")
+        kind = (
+            f"{approx_n}-for-1 split"
+            if ratio < 1
+            else f"1-for-{approx_n} reverse split"
+        )
+        print(
+            f"  [note] {label}: detected likely {kind} on {df['Date'].iloc[i].date()} "
+            f"(ratio {ratio:.4f}) -> back-adjusted prior prices. Verify against the "
+            f"actual corporate action if this matters for your analysis."
+        )
 
     return df
 
@@ -229,7 +242,6 @@ def load_universe_from_db(engine, index_symbol_id: int, start_date=None, end_dat
     if end_date:
         date_filter += " AND b.date <= :end_date"
         params["end_date"] = pd.Timestamp(end_date)
-
     query = text(f"""
         SELECT 
             s.trading_symbol,
@@ -246,6 +258,7 @@ def load_universe_from_db(engine, index_symbol_id: int, start_date=None, end_dat
         {date_filter}
         ORDER BY s.trading_symbol, b.date ASC
     """)
+    print(query)
 
     with engine.connect() as conn:
         df_all = pd.read_sql(query, conn, params=params)
@@ -304,7 +317,9 @@ def load_benchmark_from_db(
 
     df["Date"] = pd.to_datetime(df["Date"])
     df = df.sort_values("Date").drop_duplicates(subset="Date").reset_index(drop=True)
-    return _detect_and_adjust_unadjusted_splits(df, f"benchmark_symbol_id={benchmark_symbol_id}")
+    return _detect_and_adjust_unadjusted_splits(
+        df, f"benchmark_symbol_id={benchmark_symbol_id}"
+    )
 
 
 # ----------------------------------------------------------------------
@@ -861,17 +876,19 @@ def save_trade_log_by_year(trade_log, output_dir, market_label):
         return
     rows = []
     for tr in trade_log:
-        rows.append({
-            "Ticker": tr.ticker,
-            "EntryDate": tr.entry_date.date(),
-            "EntryPrice": round(tr.entry_price, 2),
-            "Shares": tr.shares,
-            "ExitDate": tr.exit_date.date(),
-            "ExitPrice": round(tr.exit_price, 2),
-            "ExitReason": tr.exit_reason,
-            "PnL": round(tr.pnl, 2),
-            "PnL_Pct": round(tr.pnl_pct, 2),
-        })
+        rows.append(
+            {
+                "Ticker": tr.ticker,
+                "EntryDate": tr.entry_date.date(),
+                "EntryPrice": round(tr.entry_price, 2),
+                "Shares": tr.shares,
+                "ExitDate": tr.exit_date.date(),
+                "ExitPrice": round(tr.exit_price, 2),
+                "ExitReason": tr.exit_reason,
+                "PnL": round(tr.pnl, 2),
+                "PnL_Pct": round(tr.pnl_pct, 2),
+            }
+        )
     df = pd.DataFrame(rows)
     df["Year"] = pd.to_datetime(df["ExitDate"]).dt.year
     os.makedirs(output_dir, exist_ok=True)
@@ -889,13 +906,16 @@ def main(cfg):
     engine = get_db_engine(cfg["db_url"])
     start_date = cfg.get("start_date")
     end_date = cfg.get("end_date")
+    exchange_id = cfg.get("exchange_id", 1)
 
     for market_label, m_cfg in cfg["markets"].items():
         index_symbol_id = m_cfg["index_symbol_id"]
         benchmark_symbol_id = m_cfg.get("benchmark_symbol_id", index_symbol_id)
 
         print(f"\n=== Market: {market_label} (index_symbol_id={index_symbol_id}) ===")
-        universe = load_universe_from_db(engine, index_symbol_id, start_date, end_date)
+        universe = load_universe_from_db(
+            engine, index_symbol_id, exchange_id, start_date, end_date
+        )
         if not universe:
             print(f"  no DB records found for index {index_symbol_id}, skipping.")
             continue
@@ -931,10 +951,15 @@ def main(cfg):
         # version -- without this, everything above only ever lived in the
         # console and was lost the moment the terminal closed) ---
         save_trade_log_by_year(trade_log, cfg["output_dir"], market_label)
-        equity_curve_path = os.path.join(cfg["output_dir"], f"equity_curve_{market_label}.csv")
+        equity_curve_path = os.path.join(
+            cfg["output_dir"], f"equity_curve_{market_label}.csv"
+        )
         equity_curve.to_csv(equity_curve_path, index=False)
         print(f"  wrote {equity_curve_path}")
-        stats_out = {k: (None if isinstance(v, float) and v != v else v) for k, v in stats.items()}
+        stats_out = {
+            k: (None if isinstance(v, float) and v != v else v)
+            for k, v in stats.items()
+        }
         stats_out["hard_stop_pct"] = cfg.get("hard_stop_pct")
         stats_out["reinvest_fraction"] = cfg.get("reinvest_fraction", 1.0)
         summary_path = os.path.join(cfg["output_dir"], f"summary_{market_label}.json")

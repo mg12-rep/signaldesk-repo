@@ -2,14 +2,15 @@
   "db_url": "postgresql+psycopg://signaldesk_user:signaldesk123@localhost:5432/signaldesk",
   "markets": {
     "NIFTY500": {
-      "index_symbol_id": 2,
+      "index_symbol_id": 2,     
       "benchmark_symbol_id": 1
     }
   },
+  "exchange_id": 1,
   "starting_capital": 1000000.0,
   "rs_rank_threshold": 70,
   "risk_pct_per_trade": 0.025,
-  "hard_stop_pct": 0.05,
+  "hard_stop_pct": 0.08,
   "trailing_stop_pct": 0.08,
   "output_dir": "C:/Work/SignalDesk-docs/backtest",
   "start_date": null,

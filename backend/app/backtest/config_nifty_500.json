@@ -1,9 +1,9 @@
 {
   "db_url": "postgresql+psycopg://signaldesk_user:signaldesk123@localhost:5432/signaldesk",
   "markets": {
-    "NASDAQ100": {
-      "index_symbol_id": 2978,
-      "benchmark_symbol_id": 2978
+    "NIFTY500": {
+      "index_symbol_id": 2,
+      "benchmark_symbol_id": 1
     }
   },
   "starting_capital": 1000000.0,
@@ -38,5 +38,5 @@
   ],
   "final_exit_ma": "SMA50",
   "ticker_filter": [],
-  "ticker_filter_file": null
+  "ticker_filter_file":"C:/Work/SignalDesk/data/evergreen_filter_stocks.csv"
 }

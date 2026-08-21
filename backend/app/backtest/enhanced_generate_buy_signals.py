@@ -87,7 +87,12 @@ def resolve_ticker_filter(cfg):
                 df = pd.read_csv(file_path, encoding="utf-8-sig")
                 col = None
                 for c in df.columns:
-                    if str(c).strip().lower() in ("symbol", "ticker", "tickers", "symbols"):
+                    if str(c).strip().lower() in (
+                        "symbol",
+                        "ticker",
+                        "tickers",
+                        "symbols",
+                    ):
                         col = c
                         break
                 if col is not None:
@@ -222,9 +227,12 @@ def main(cfg):
     as_of_date = cfg.get("as_of_date")
     start_date = cfg.get("start_date")
     end_date = cfg.get("end_date")
+
     ticker_filter = resolve_ticker_filter(cfg)
     if ticker_filter:
-        print(f"Ticker filter active: restricting scan to {len(ticker_filter)} supplied tickers.")
+        print(
+            f"Ticker filter active: restricting scan to {len(ticker_filter)} supplied tickers."
+        )
 
     for market_label, m_cfg in cfg["markets"].items():
         index_symbol_id = m_cfg["index_symbol_id"]
@@ -240,7 +248,9 @@ def main(cfg):
 
         index_return_series = None
         market_health = None
-        idx_df = load_benchmark_from_db(engine, benchmark_symbol_id, start_date, end_date)
+        idx_df = load_benchmark_from_db(
+            engine, benchmark_symbol_id, start_date, end_date
+        )
         if idx_df is not None and not idx_df.empty:
             index_return_series = compute_index_weighted_return(idx_df)
             market_health = compute_market_health(idx_df, cfg)
@@ -264,11 +274,17 @@ def main(cfg):
             missing = ticker_filter - {t.upper() for t in universe.keys()}
             if missing:
                 print(f"  [warn] not found in this market's DB data: {sorted(missing)}")
-            universe = {t: df for t, df in universe.items() if t.upper() in ticker_filter}
-            print(f"  scanning {len(universe)} of {len(ticker_filter)} requested tickers "
-                  f"(others excluded by liquidity filter or not found)")
+            universe = {
+                t: df for t, df in universe.items() if t.upper() in ticker_filter
+            }
+            print(
+                f"  scanning {len(universe)} of {len(ticker_filter)} requested tickers "
+                f"(others excluded by liquidity filter or not found)"
+            )
             if not universe:
-                print(f"  none of the requested tickers survived filtering for {market_label}, skipping.")
+                print(
+                    f"  none of the requested tickers survived filtering for {market_label}, skipping."
+                )
                 continue
 
         if as_of_date:

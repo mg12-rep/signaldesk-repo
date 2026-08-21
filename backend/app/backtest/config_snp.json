@@ -9,7 +9,7 @@
   "starting_capital": 1000000.0,
   "rs_rank_threshold": 70,
   "risk_pct_per_trade": 0.025,
-  "hard_stop_pct": 0.05,
+  "hard_stop_pct": 0.08,
   "trailing_stop_pct": 0.08,
   "output_dir": "C:/Work/SignalDesk-docs/backtest",
   "start_date": null,
@@ -36,7 +36,6 @@
       0.5
     ]
   ],
-  "final_exit_ma": "SMA50",
   "ticker_filter": [],
-  "ticker_filter_file": "C:/Work/SignalDesk-docs/fundamental_filtered_stocks.csv"
+  "ticker_filter_file":"C:/Work/SignalDesk/data/Fundamental_Filter_US_Stocks.csv"
 }
