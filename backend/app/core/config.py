@@ -6,9 +6,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 ENV_FILE_PATH = BASE_DIR / ".env"
 
+
 class Settings(BaseSettings):
     # Core Database Config (Provide default for fallback if needed)
-    DATABASE_URL: str = "postgresql+asyncpg://signaldesk_user:signaldesk123@localhost:5432/signaldesk"
+    DATABASE_URL: str = (
+        "postgresql+psycopg3://ddd:signaldesk123@localhost:5432/signaldesk"
+    )
 
     # Zerodha Credentials
     KITE_API_KEY: str = ""
@@ -20,9 +23,8 @@ class Settings(BaseSettings):
 
     # Pydantic Settings Configuration (v2)
     model_config = SettingsConfigDict(
-        env_file=ENV_FILE_PATH,
-        env_file_encoding="utf-8",
-        extra="ignore"
+        env_file=ENV_FILE_PATH, env_file_encoding="utf-8", extra="ignore"
     )
+
 
 settings = Settings()

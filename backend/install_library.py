@@ -11,8 +11,8 @@ def install_library(package_name):
 
 # Example: Installing alembic automatically
 try:
-    import psycopg as almb
+    import ib_insync as almb
 except ImportError:
     # If the library isn't found, install it on the fly
-    install_library("psycopg[binary]")
-    import psycopg as almb
+    install_library("ib_insync")
+    # import psycopg1 as almb

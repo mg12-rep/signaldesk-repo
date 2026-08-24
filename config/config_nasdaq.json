@@ -1,0 +1,42 @@
+{
+  "db_url": "postgresql+psycopg://signaldesk_user:signaldesk123@localhost:5432/signaldesk",
+  "markets": {
+    "NASDAQ100": {
+      "index_symbol_id": 2978,
+      "benchmark_symbol_id": 2978
+    }
+  },
+  "starting_capital": 1000000.0,
+  "rs_rank_threshold": 70,
+  "risk_pct_per_trade": 0.025,
+  "hard_stop_pct": 0.08,
+  "trailing_stop_pct": 0.08,
+  "output_dir": "C:/Work/SignalDesk-docs/backtest",
+  "start_date": null,
+  "end_date": null,
+  "min_pct_above_52w_low": 0.3,
+  "max_pct_below_52w_high": 0.25,
+  "pivot_order": 3,
+  "min_base_days": 15,
+  "min_contractions": 2,
+  "max_base_age_days": 90,
+  "entry_discount": 0.025,
+  "volume_mult": 1.25,
+  "min_avg_volume": 50000,
+  "as_of_date": null,
+  "current_equity": 1000000.0,
+  "market_health_method": "sma",
+  "market_health_ema_fast": 8,
+  "market_health_ema_slow": 21,
+  "market_health_ema_confirm_days": 3,
+  "post_profit_trailing_stop_pct": 0.15,
+  "profit_targets": [
+    [
+      0.2,
+      0.5
+    ]
+  ],
+  "final_exit_ma": "SMA50",
+  "ticker_filter": [],
+  "ticker_filter_file": null
+}
