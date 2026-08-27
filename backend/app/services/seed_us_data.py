@@ -9,6 +9,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from ib_insync import IB, Index, Stock, util
 from sqlalchemy import create_engine, text
+from sqlalchemy.dialects.postgresql import insert
 
 load_dotenv()
 logger = logging.getLogger("seed_us_universe")
@@ -19,16 +20,7 @@ logging.basicConfig(
 sync_db_url = os.getenv("DATABASE_URL", "").replace(
     "postgresql+asyncpg://", "postgresql+psycopg2://"
 )
-engine = create_engine(sync_db_url)
-
-EXCHANGE_TO_IBKR_MAP = {
-    "NASDAQ": {"exchange": "SMART", "primaryExchange": "NASDAQ", "currency": "USD"},
-    "NYSE": {"exchange": "SMART", "primaryExchange": "NYSE", "currency": "USD"},
-    "AMEX": {"exchange": "SMART", "primaryExchange": "AMEX", "currency": "USD"},
-    "US": {"exchange": "SMART", "currency": "USD"},
-    "LSE": {"exchange": "LSEETF", "currency": "USD"},
-    "TSX": {"exchange": "TSE", "currency": "CAD"},
-}
+engine = create_engine(sync_db_url, pool_size=5, max_overflow=10)
 
 
 def get_active_us_symbols_from_db() -> List[Dict]:
@@ -66,29 +58,6 @@ def get_active_us_symbols_from_db() -> List[Dict]:
         return [dict(r) for r in results]
 
 
-def update_symbol_exchange(symbol_id: int, detected_exchange: str):
-    """Updates the exchange_id in the symbols table based on IBKR qualification."""
-    if not detected_exchange:
-        return
-    with engine.begin() as conn:
-        # Get or create exchange
-        exch_id = conn.execute(
-            text("""
-                INSERT INTO exchanges (code, name, country, timezone)
-                VALUES (:code, :name, 'US', 'America/New_York')
-                ON CONFLICT (code) DO UPDATE SET code = EXCLUDED.code
-                RETURNING id;
-            """),
-            {"code": detected_exchange.upper(), "name": detected_exchange.upper()},
-        ).scalar()
-
-        # Update symbol mapping
-        conn.execute(
-            text("UPDATE symbols SET exchange_id = :exch_id WHERE id = :sid"),
-            {"exch_id": exch_id, "sid": symbol_id},
-        )
-
-
 def get_latest_trade_date(symbol_id: int) -> Optional[date]:
     """Returns the latest available trade date across hot and cold tiers."""
     query = text("""
@@ -123,36 +92,30 @@ def build_ibkr_contract(trading_symbol: str, is_index: bool = False) -> object:
         return Stock(symbol=raw_sym, exchange="TSE", currency="CAD")
 
     # 4. Standard US Equities & ETFs (S&P 500, NASDAQ 100, Russell 2000)
-    # Convert dots/hyphens/slashes to spaces (e.g., BRK.B -> BRK B, BF.B -> BF B)
     clean_sym = raw_sym.replace(".", " ").replace("-", " ").replace("/", " ").strip()
-
-    # Do NOT specify primaryExchange here so IBKR auto-resolves between NASDAQ, NYSE, and ARCA
     return Stock(symbol=clean_sym, exchange="SMART", currency="USD")
 
 
 def fetch_historical_bars_with_retry(
     ib: IB,
-    contract: Stock,
-    symbol_id: int,
-    duration_str: str = "4 Y",
+    contract: object,
+    duration_str: str = "2 Y",
     max_retries: int = 3,
 ) -> pd.DataFrame:
     """Requests historical daily bars from TWS with rate-limit and pacing handling."""
     try:
         qualified = ib.qualifyContracts(contract)
     except Exception as e:
-        logger.warning(f"Failed qualifying contract {contract.symbol}: {e}")
+        logger.warning(
+            f"Failed qualifying contract {getattr(contract, 'symbol', '')}: {e}"
+        )
         return pd.DataFrame()
 
     if not qualified:
-        logger.warning(f"⚠️ Contract qualification failed for: {contract.symbol}")
+        logger.warning(
+            f"⚠️ Contract qualification failed for: {getattr(contract, 'symbol', '')}"
+        )
         return pd.DataFrame()
-
-    if contract.primaryExchange:
-        try:
-            update_symbol_exchange(symbol_id, contract.primaryExchange)
-        except Exception as e:
-            logger.warning(f"Could not update exchange for {contract.symbol}: {e}")
 
     for attempt in range(1, max_retries + 1):
         try:
@@ -175,18 +138,44 @@ def fetch_historical_bars_with_retry(
             if "pacing violation" in err_msg or "rate limit" in err_msg:
                 backoff = attempt * 12
                 logger.warning(
-                    f"⏳ Pacing limit hit on {contract.symbol}. Sleeping {backoff}s..."
+                    f"⏳ Pacing limit hit on {getattr(contract, 'symbol', '')}. Sleeping {backoff}s..."
                 )
                 time.sleep(backoff)
             else:
-                logger.error(f"Error requesting data for {contract.symbol}: {e}")
+                logger.error(
+                    f"Error requesting data for {getattr(contract, 'symbol', '')}: {e}"
+                )
                 break
 
     return pd.DataFrame()
 
 
+def bulk_upsert_eod_bars(records: List[dict], table_name: str = "market_data_eod"):
+    """
+    Executes a high-speed batched upsert using PostgreSQL's ON CONFLICT DO UPDATE.
+    """
+    if not records:
+        return
+
+    # Raw SQL batch execution with ON CONFLICT resolution
+    query = text(f"""
+        INSERT INTO {table_name} (symbol_id, date, open, high, low, close, adj_close, volume)
+        VALUES (:symbol_id, :date, :open, :high, :low, :close, :adj_close, :volume)
+        ON CONFLICT (symbol_id, date) DO UPDATE SET
+            open = EXCLUDED.open,
+            high = EXCLUDED.high,
+            low = EXCLUDED.low,
+            close = EXCLUDED.close,
+            adj_close = EXCLUDED.adj_close,
+            volume = EXCLUDED.volume;
+    """)
+
+    with engine.begin() as conn:
+        conn.execute(query, records)
+
+
 def _persist_bars(df: pd.DataFrame, symbol_id: int, cutoff_date: date):
-    """Upserts partitioned bars into market_data_eod and market_data_history."""
+    """Partitions and persists bars via bulk_upsert_eod_bars."""
     eod_records = []
     hist_records = []
 
@@ -208,30 +197,10 @@ def _persist_bars(df: pd.DataFrame, symbol_id: int, cutoff_date: date):
             hist_records.append(record)
 
     if eod_records:
-        with engine.begin() as conn:
-            conn.execute(
-                text("""
-                INSERT INTO market_data_eod (symbol_id, date, open, high, low, close, adj_close, volume)
-                VALUES (:symbol_id, :date, :open, :high, :low, :close, :adj_close, :volume)
-                ON CONFLICT (symbol_id, date) DO UPDATE SET
-                    open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low,
-                    close=EXCLUDED.close, adj_close=EXCLUDED.adj_close, volume=EXCLUDED.volume;
-            """),
-                eod_records,
-            )
+        bulk_upsert_eod_bars(eod_records, table_name="market_data_eod")
 
     if hist_records:
-        with engine.begin() as conn:
-            conn.execute(
-                text("""
-                INSERT INTO market_data_history (symbol_id, date, open, high, low, close, adj_close, volume)
-                VALUES (:symbol_id, :date, :open, :high, :low, :close, :adj_close, :volume)
-                ON CONFLICT (symbol_id, date) DO UPDATE SET
-                    open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low,
-                    close=EXCLUDED.close, adj_close=EXCLUDED.adj_close, volume=EXCLUDED.volume;
-            """),
-                hist_records,
-            )
+        bulk_upsert_eod_bars(hist_records, table_name="market_data_history")
 
 
 def _run_sync_internal(
@@ -273,7 +242,7 @@ def _run_sync_internal(
         for idx, item in enumerate(symbols, 1):
             sym_id = item["symbol_id"]
             trading_sym = item["trading_symbol"]
-            exch_code = item["exchange_code"]
+            is_index_flag = item["is_index"]
 
             try:
                 latest_date = get_latest_trade_date(sym_id)
@@ -283,14 +252,14 @@ def _run_sync_internal(
                     skipped += 1
                     continue
 
-                duration = (
-                    "4 Y"
-                    if latest_date is None
-                    else f"{(today - latest_date).days + 2} D"
-                )
-                contract = build_ibkr_contract(trading_sym, exch_code)
+                if latest_date is None:
+                    duration = "2 Y"
+                else:
+                    delta_days = max((today - latest_date).days + 2, 5)
+                    duration = f"{delta_days} D"
+                contract = build_ibkr_contract(trading_sym, is_index=is_index_flag)
                 df = fetch_historical_bars_with_retry(
-                    ib, contract, sym_id, duration_str=duration
+                    ib, contract, duration_str=duration
                 )
 
                 if df.empty:
@@ -308,8 +277,7 @@ def _run_sync_internal(
                 failed += 1
                 logger.error(f"[{idx}/{total}] ❌ Error on {trading_sym}: {e}")
 
-            # 1.2s delay to comply with IBKR pacing restrictions
-            time.sleep(1.2)
+            time.sleep(0.3)
 
     finally:
         ib.disconnect()
@@ -336,5 +304,4 @@ def seed_us_universe_from_db(
 
 
 if __name__ == "__main__":
-    # Test with first 10 symbols, or pass max_symbols=None for full universe
     seed_us_universe_from_db(max_symbols=None)

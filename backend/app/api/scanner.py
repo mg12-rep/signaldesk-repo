@@ -1,4 +1,3 @@
-import asyncio
 import os
 from typing import List, Optional
 
@@ -9,6 +8,8 @@ from app.backtest.enhanced_generate_buy_signals import (
     scan_ticker,
     suggest_position_size,
 )
+
+# Import directly from your existing engine modules
 from app.backtest.enhanced_minervini_backtest import (
     DEFAULT_CONFIG,
     add_rs_rank,
@@ -25,211 +26,232 @@ from pydantic import BaseModel
 router = APIRouter()
 
 
-class ScanCandidate(BaseModel):
-    name: str
+class SignalItem(BaseModel):
+    status: str
     ticker: str
-    market: str
-    action: (
-        str  # BUY_TODAY, NEAR_BUY_VOLUME_PENDING, WATCHLIST, WATCHLIST_MARKET_UNHEALTHY
-    )
-    trigger: float
-    stop: float
-    atr: float
-    trailingPts: float
-    shares: int
-    rs: float
+    date: str
+    trigger_price: float
+    close: Optional[float] = None
+    volume: Optional[int] = None
+    rs_rank: Optional[float] = None
     swing_high: Optional[float] = None
+    fill_price_est: Optional[float] = None
+    hard_stop: Optional[float] = None
+    suggested_shares: Optional[int] = None
+    suggested_cost: Optional[float] = None
     volume_needed: Optional[int] = None
     pct_from_trigger: Optional[float] = None
+    base_age_days: Optional[int] = None
 
 
-def _run_minervini_scan_sync(
-    market: str = "ALL",
-    custom_stock_file: Optional[str] = None,
-    as_of_date: Optional[str] = None,
-) -> List[dict]:
+class ScannerRunResponse(BaseModel):
+    strategy: str
+    mode: str
+    market_label: str
+    market_status: str
+    total_universe_count: int
+    scanned_count: int
+    buy_today: List[SignalItem]
+    near_buys: List[SignalItem]
+    watchlist: List[SignalItem]
+
+
+@router.get("/run", response_model=ScannerRunResponse)
+def run_scanner_pipeline(
+    strategy: str = Query("minervini_vcp"),
+    mode: str = Query("UNIVERSE"),
+    universe: Optional[str] = Query("NSE_500"),
+    custom_path: Optional[str] = Query(None),
+    market: str = Query("NSE"),
+):
+    # 1. Base config cloned from DEFAULT_CONFIG
     cfg = dict(DEFAULT_CONFIG)
-    cfg["db_url"] = os.getenv("DATABASE_URL", cfg["db_url"]).replace(
-        "postgresql+asyncpg://", "postgresql+psycopg2://"
+    cfg["output_dir"] = "output"
+
+    # 2. Map Universe / Market to corresponding target config IDs
+    if mode == "CUSTOM_FILE":
+        if not custom_path or not os.path.exists(custom_path):
+            raise HTTPException(
+                status_code=400, detail=f"Custom CSV file not found: {custom_path}"
+            )
+
+        cfg["ticker_filter_file"] = custom_path
+        if market == "US":
+            market_label = "US_CUSTOM"
+            cfg["markets"] = {
+                market_label: {"index_symbol_id": 559, "benchmark_symbol_id": 559}
+            }
+        else:
+            market_label = "NSE_CUSTOM"
+            cfg["markets"] = {
+                market_label: {"exchange_id": 1, "benchmark_symbol_id": 2}
+            }
+
+    else:  # mode == "UNIVERSE"
+        cfg["ticker_filter_file"] = None
+        if universe == "NSE_500":
+            market_label = "NIFTY500"
+            cfg["markets"] = {
+                market_label: {"index_symbol_id": 2, "benchmark_symbol_id": 1}
+            }
+        elif universe == "NSE_ALL":
+            market_label = "NSE_ALL"
+            cfg["markets"] = {
+                market_label: {"exchange_id": 1, "benchmark_symbol_id": 2}
+            }
+        elif universe == "SP_500":
+            market_label = "SP500"
+            cfg["markets"] = {
+                market_label: {"index_symbol_id": 559, "benchmark_symbol_id": 559}
+            }
+        elif universe == "NASDAQ_100":
+            market_label = "NASDAQ100"
+            cfg["markets"] = {
+                market_label: {"index_symbol_id": 2978, "benchmark_symbol_id": 2978}
+            }
+        else:
+            raise HTTPException(
+                status_code=400, detail=f"Unknown target universe: {universe}"
+            )
+
+    # 3. Resolve Database Engine
+    engine = get_db_engine(cfg["db_url"])
+    m_cfg = cfg["markets"][market_label]
+    index_symbol_id = m_cfg.get("index_symbol_id")
+    exchange_id = m_cfg.get("exchange_id")
+    benchmark_symbol_id = m_cfg.get("benchmark_symbol_id", index_symbol_id or 1)
+
+    # 4. Load Universe from Database
+    universe_data = load_universe_from_db(
+        engine,
+        index_symbol_id=index_symbol_id,
+        exchange_id=exchange_id,
+        start_date=cfg.get("start_date"),
+        end_date=cfg.get("end_date"),
     )
 
-    if custom_stock_file and os.path.exists(custom_stock_file):
-        cfg["ticker_filter_file"] = custom_stock_file
+    if not universe_data:
+        return ScannerRunResponse(
+            strategy=strategy,
+            mode=mode,
+            market_label=market_label,
+            market_status="NO_DATA",
+            total_universe_count=0,
+            scanned_count=0,
+            buy_today=[],
+            near_buys=[],
+            watchlist=[],
+        )
 
+    total_universe_count = len(universe_data)
+
+    # 5. Load Benchmark and compute Market Health / RS baseline
+    index_return_series = None
+    market_health = None
+    idx_df = load_benchmark_from_db(
+        engine,
+        benchmark_symbol_id=benchmark_symbol_id,
+        start_date=cfg.get("start_date"),
+        end_date=cfg.get("end_date"),
+    )
+    if idx_df is not None and not idx_df.empty:
+        index_return_series = compute_index_weighted_return(idx_df)
+        market_health = compute_market_health(idx_df, cfg)
+
+    # 6. Compute Indicators & Relative Strength Percentile Ranks
+    for t, df in universe_data.items():
+        universe_data[t] = compute_indicators(
+            df, index_return_series=index_return_series
+        )
+    add_rs_rank(universe_data)
+
+    # 7. Apply Liquidity Filter (50-day average volume)
+    for t in list(universe_data.keys()):
+        avgvol = universe_data[t]["AvgVol50"].mean()
+        if pd.isna(avgvol) or avgvol < cfg["min_avg_volume"]:
+            del universe_data[t]
+
+    # 8. Apply Shortlist / Ticker Filter (Computed after RS Ranking)
     ticker_filter = resolve_ticker_filter(cfg)
-    engine = get_db_engine(cfg["db_url"])
-
-    # Determine which markets to scan
-    target_markets = {}
-    if market == "ALL":
-        target_markets = cfg["markets"]
-    elif market == "US":
-        target_markets = {
-            k: v for k, v in cfg["markets"].items() if k in ["SP500", "NASDAQ100"]
+    if ticker_filter:
+        universe_data = {
+            t: df for t, df in universe_data.items() if t.upper() in ticker_filter
         }
-    elif market == "NSE":
-        target_markets = {k: v for k, v in cfg["markets"].items() if k in ["NIFTY500"]}
-    elif market in cfg["markets"]:
-        target_markets = {market: cfg["markets"][market]}
-    else:
-        target_markets = cfg["markets"]
 
-    all_candidates = []
+    if not universe_data:
+        return ScannerRunResponse(
+            strategy=strategy,
+            mode=mode,
+            market_label=market_label,
+            market_status="NO_TICKERS_MATCHED_FILTER",
+            total_universe_count=total_universe_count,
+            scanned_count=0,
+            buy_today=[],
+            near_buys=[],
+            watchlist=[],
+        )
 
-    for market_label, m_cfg in target_markets.items():
-        index_symbol_id = m_cfg.get("index_symbol_id")
-        exchange_id = m_cfg.get("exchange_id")
-        benchmark_symbol_id = m_cfg.get("benchmark_symbol_id", index_symbol_id or 1)
-
+    # 9. Determine Market Regime Health
+    today = max(df["Date"].iloc[-1] for df in universe_data.values())
+    market_ok = True
+    if market_health is not None:
         try:
-            universe = load_universe_from_db(
-                engine,
-                index_symbol_id=index_symbol_id,
-                exchange_id=exchange_id,
-                start_date=cfg.get("start_date"),
-                end_date=cfg.get("end_date"),
-            )
-        except Exception as e:
+            market_ok = bool(market_health.asof(today))
+        except Exception:
+            market_ok = bool(market_health.iloc[-1])
+
+    # 10. Run VCP Signal Scan
+    buys, near_buys, watchlist = [], [], []
+    for t, df in universe_data.items():
+        result = scan_ticker(t, df.reset_index(drop=True), cfg)
+        if result is None:
             continue
 
-        if not universe:
-            continue
-
-        # Benchmark, RS Ranking & Regime Filter
-        index_return_series = None
-        market_health = None
-        idx_df = load_benchmark_from_db(
-            engine,
-            benchmark_symbol_id=benchmark_symbol_id,
-            start_date=cfg.get("start_date"),
-            end_date=cfg.get("end_date"),
+        result["date"] = (
+            str(result["date"].date())
+            if hasattr(result["date"], "date")
+            else str(result["date"])
         )
-        if idx_df is not None and not idx_df.empty:
-            index_return_series = compute_index_weighted_return(idx_df)
-            market_health = compute_market_health(idx_df, cfg)
 
-        # Compute Technical Indicators on the full universe first
-        for t, df in universe.items():
-            universe[t] = compute_indicators(
-                df, index_return_series=index_return_series
-            )
-        add_rs_rank(universe)
+        if result["status"] == "BUY_TODAY":
+            if market_ok:
+                shares, cost = suggest_position_size(result["fill_price_est"], cfg)
+                result["suggested_shares"] = shares
+                result["suggested_cost"] = round(cost, 2)
+                buys.append(result)
+            else:
+                result["status"] = "WATCHLIST_MARKET_UNHEALTHY"
+                result["pct_from_trigger"] = 0.0
+                watchlist.append(result)
 
-        # Liquidity filter
-        for t in list(universe.keys()):
-            avgvol = universe[t]["AvgVol50"].mean()
-            if pd.isna(avgvol) or avgvol < cfg["min_avg_volume"]:
-                del universe[t]
+        elif result["status"] == "NEAR_BUY_VOLUME_PENDING":
+            near_buys.append(result)
 
-        # Apply Custom Stock Filter AFTER universe RS ranking
-        if ticker_filter:
-            universe = {
-                t: df for t, df in universe.items() if t.upper() in ticker_filter
-            }
-            if not universe:
-                continue
+        elif result["status"] == "WATCHLIST":
+            watchlist.append(result)
 
-        if as_of_date:
-            cutoff = pd.Timestamp(as_of_date)
-            for t in list(universe.keys()):
-                df = universe[t]
-                df = df[df["Date"] <= cutoff].reset_index(drop=True)
-                if len(df) < 260:
-                    del universe[t]
-                else:
-                    universe[t] = df
+    # Sort results
+    buys.sort(key=lambda x: x.get("rs_rank") or 0, reverse=True)
+    near_buys.sort(key=lambda x: x.get("rs_rank") or 0, reverse=True)
+    watchlist.sort(key=lambda x: x.get("pct_from_trigger") or 999)
 
-        if not universe:
-            continue
+    # Normalize keys for Pydantic serialization
+    def normalize_signal(item: dict) -> SignalItem:
+        # Map current_close to close if present
+        if "close" not in item and "current_close" in item:
+            item["close"] = item["current_close"]
+        if "volume" not in item:
+            item["volume"] = 0
+        return SignalItem(**item)
 
-        today = max(df["Date"].iloc[-1] for df in universe.values())
-        market_ok = True
-        if market_health is not None:
-            try:
-                market_ok = bool(market_health.asof(today))
-            except Exception:
-                market_ok = bool(market_health.iloc[-1])
-
-        # Scan each ticker for VCP entry/watchlist
-        for t, df in universe.items():
-            res = scan_ticker(t, df.reset_index(drop=True), cfg)
-            if res is None:
-                continue
-
-            # Calculate ATR (14-day)
-            last_df = df.iloc[-14:]
-            high_low = last_df["High"] - last_df["Low"]
-            atr = (
-                float(high_low.mean())
-                if not high_low.empty
-                else float(res.get("close", 0) * 0.02)
-            )
-
-            status = res["status"]
-            trigger = float(res.get("trigger_price", res.get("close", 0)))
-            fill_est = float(res.get("fill_price_est", trigger))
-            stop = float(res.get("hard_stop", fill_est * (1 - cfg["hard_stop_pct"])))
-            trailing_pts = float(fill_est * cfg["trailing_stop_pct"])
-            shares, _ = suggest_position_size(fill_est, cfg)
-            rs_val = float(res.get("rs_rank") or 0.0)
-
-            # Regime action mapping
-            action = status
-            if status == "BUY_TODAY" and not market_ok:
-                action = "WATCHLIST_MARKET_UNHEALTHY"
-
-            market_type = "NSE" if "NIFTY" in market_label else "US"
-
-            all_candidates.append(
-                {
-                    "name": t,
-                    "ticker": t,
-                    "market": market_type,
-                    "action": action,
-                    "trigger": round(trigger, 2),
-                    "stop": round(stop, 2),
-                    "atr": round(atr, 2),
-                    "trailingPts": round(trailing_pts, 2),
-                    "shares": int(shares),
-                    "rs": round(rs_val, 1),
-                    "swing_high": res.get("swing_high"),
-                    "volume_needed": res.get("volume_needed"),
-                    "pct_from_trigger": res.get("pct_from_trigger"),
-                }
-            )
-
-    # Sort results: BUY_TODAY first, then by RS rank descending
-    action_priority = {
-        "BUY_TODAY": 0,
-        "NEAR_BUY_VOLUME_PENDING": 1,
-        "WATCHLIST": 2,
-        "WATCHLIST_MARKET_UNHEALTHY": 3,
-    }
-    all_candidates.sort(key=lambda x: (action_priority.get(x["action"], 4), -x["rs"]))
-    return all_candidates
-
-
-@router.get("/run", response_model=List[ScanCandidate])
-async def run_scanner(
-    exchange: str = Query("ALL", regex="^(US|NSE|ALL|SP500|NASDAQ100|NIFTY500)$"),
-    custom_stock_file: Optional[str] = Query(
-        None, description="Path to CSV/TXT custom stock list"
-    ),
-    as_of_date: Optional[str] = Query(None, description="YYYY-MM-DD cutoff date"),
-):
-    """
-    Executes the Minervini VCP strategy scan using enhanced_generate_buy_signals logic.
-    Runs computation in an AnyIO worker thread to keep FastAPI responsive.
-    """
-    try:
-        results = await asyncio.to_thread(
-            _run_minervini_scan_sync,
-            market=exchange,
-            custom_stock_file=custom_stock_file,
-            as_of_date=as_of_date,
-        )
-        return results
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Scanner execution error: {str(e)}"
-        )
+    return ScannerRunResponse(
+        strategy=strategy,
+        mode=mode,
+        market_label=market_label,
+        market_status="HEALTHY" if market_ok else "UNHEALTHY",
+        total_universe_count=total_universe_count,
+        scanned_count=len(universe_data),
+        buy_today=[normalize_signal(b) for b in buys],
+        near_buys=[normalize_signal(nb) for nb in near_buys],
+        watchlist=[normalize_signal(w) for w in watchlist],
+    )

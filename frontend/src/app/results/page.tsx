@@ -1,505 +1,386 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, Suspense } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import {
-  CheckCircle2,
-  ShieldCheck,
-  X,
+  ArrowLeft,
   RefreshCw,
-  AlertCircle,
+  ShieldCheck,
+  AlertTriangle,
+  Eye,
+  Send,
+  Zap,
+  TrendingUp,
 } from "lucide-react";
 
-interface CandidateResult {
-  name: string;
+interface SignalItem {
+  status: string;
   ticker: string;
-  market: string;
-  action: "BUY_TODAY" | "NEAR_BUY" | "WATCH";
-  trigger: number;
-  stop: number;
-  atr: number;
-  trailingPts: number;
-  shares: number;
-  rs: number;
+  date: string;
+  trigger_price: number;
+  close: number;
+  volume: number;
+  rs_rank?: number;
+  swing_high?: number;
+  fill_price_est?: number;
+  hard_stop?: number;
+  suggested_shares?: number;
+  suggested_cost?: number;
+  volume_needed?: number;
+  pct_from_trigger?: number;
+  base_age_days?: number;
 }
 
-export default function StrategyResults() {
-  const [results, setResults] = useState<CandidateResult[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [selectedMarket, setSelectedMarket] = useState<string>("ALL");
-  const [selectedStrategy, setSelectedStrategy] = useState<string>("STAGE_2");
+interface ScannerRunResponse {
+  strategy: string;
+  mode: string;
+  market_label: string;
+  market_status: "HEALTHY" | "UNHEALTHY" | string;
+  total_universe_count: number;
+  scanned_count: number;
+  buy_today: SignalItem[];
+  near_buys: SignalItem[];
+  watchlist: SignalItem[];
+}
 
-  const [selectedStock, setSelectedStock] = useState<CandidateResult | null>(
-    null,
-  );
-  const [orderForm, setOrderForm] = useState({
-    broker: "ZERODHA",
-    orderType: "LIMIT",
-    quantity: 1,
-    limitPrice: 0,
-    exchange: "NSE",
-    hardStop: 0,
-    trailingStopPts: 0,
-  });
-  const [isOrdering, setIsOrdering] = useState(false);
-  const [orderPlaced, setOrderPlaced] = useState(false);
-  const [dispatchError, setDispatchError] = useState<string | null>(null);
+function ResultsContent() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
 
-  // Inside src/app/results/page.tsx:
-  const [customStockPath, setCustomStockPath] = useState<string>("");
+  const [data, setData] = useState<ScannerRunResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<
+    "BUY_TODAY" | "NEAR_BUYS" | "WATCHLIST"
+  >("BUY_TODAY");
+  const [selectedSignal, setSelectedSignal] = useState<SignalItem | null>(null);
 
-  const fetchStrategyResults = async () => {
+  const fetchSignals = async () => {
     setLoading(true);
-    setError(null);
     try {
-      let url = `http://localhost:8000/api/v1/scanner/run?exchange=${selectedMarket}&strategy=${selectedStrategy}`;
-      if (customStockPath.trim()) {
-        url += `&custom_stock_file=${encodeURIComponent(customStockPath.trim())}`;
+      const res = await fetch(
+        `http://localhost:8000/api/v1/scanner/run?${searchParams.toString()}`,
+      );
+      if (res.ok) {
+        const json: ScannerRunResponse = await res.json();
+        setData(json);
+        if (json.buy_today.length > 0) {
+          setSelectedSignal(json.buy_today[0]);
+          setActiveTab("BUY_TODAY");
+        } else if (json.near_buys.length > 0) {
+          setSelectedSignal(json.near_buys[0]);
+          setActiveTab("NEAR_BUYS");
+        } else if (json.watchlist.length > 0) {
+          setSelectedSignal(json.watchlist[0]);
+          setActiveTab("WATCHLIST");
+        } else {
+          setSelectedSignal(null);
+        }
       }
-      const res = await fetch(url);
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(
-          errData.detail || "Failed to load candidate strategy signals",
-        );
-      }
-      const data = await res.json();
-      setResults(data);
-    } catch (err: any) {
-      setError(err.message || "Failed to retrieve results");
+    } catch (err) {
+      console.error("Failed to execute scanner:", err);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchStrategyResults();
-  }, [selectedMarket, selectedStrategy]);
+    fetchSignals();
+  }, [searchParams]);
 
-  const handleOpenOrder = (stock: CandidateResult) => {
-    setSelectedStock(stock);
-    setOrderPlaced(false);
-    setDispatchError(null);
-
-    const defaultBroker =
-      stock.market === "US" || stock.market === "LSE" || stock.market === "TSE"
-        ? "IBKR"
-        : "ZERODHA";
-
-    setOrderForm({
-      broker: defaultBroker,
-      orderType: "LIMIT",
-      quantity: stock.shares,
-      limitPrice: stock.trigger,
-      exchange: stock.market === "US" ? "" : stock.market,
-      hardStop: stock.stop,
-      trailingStopPts: stock.trailingPts,
-    });
-  };
-
-  const handleDispatchOrder = async () => {
-    if (!selectedStock) return;
-    setIsOrdering(true);
-    setDispatchError(null);
-
-    try {
-      const payload = {
-        symbol: selectedStock.ticker,
-        broker: orderForm.broker,
-        order_type: orderForm.orderType,
-        quantity: orderForm.quantity,
-        price: orderForm.limitPrice,
-        exchange: orderForm.exchange,
-        stop_loss: orderForm.hardStop,
-        trailing_stop_pts: orderForm.trailingStopPts,
-      };
-
-      const res = await fetch("http://localhost:8000/api/v1/orders/execute", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.detail || "Broker order rejected");
-      }
-
-      setOrderPlaced(true);
-    } catch (err: any) {
-      setDispatchError(err.message || "Order placement failed");
-    } finally {
-      setIsOrdering(false);
-    }
-  };
+  const currentList =
+    activeTab === "BUY_TODAY"
+      ? data?.buy_today || []
+      : activeTab === "NEAR_BUYS"
+        ? data?.near_buys || []
+        : data?.watchlist || [];
 
   return (
-    <div className="space-y-6">
-      {/* Header & Filter Controls */}
-      <div className="flex flex-wrap justify-between items-center gap-4">
-        <div>
-          <h1 className="text-xl font-bold text-white">
-            Strategy Execution Results
-          </h1>
-          <p className="text-slate-400 text-xs mt-1">
-            Shortlisted candidates with multi-broker routing and risk-sized
-            order tickets
-          </p>
-        </div>
-
+    <div className="space-y-6 p-1">
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <select
-            value={selectedMarket}
-            onChange={(e) => setSelectedMarket(e.target.value)}
-            className="bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-md px-3 py-2 outline-none focus:border-blue-500"
-          >
-            <option value="ALL">All Markets</option>
-            <option value="US">US Universe</option>
-            <option value="NSE">NSE 500</option>
-          </select>
-
-          <select
-            value={selectedStrategy}
-            onChange={(e) => setSelectedStrategy(e.target.value)}
-            className="bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-md px-3 py-2 outline-none focus:border-blue-500"
-          >
-            <option value="STAGE_2">Minervini Stage 2</option>
-            <option value="CONNORS_RSI">Connors RSI</option>
-            <option value="MOMENTUM">Momentum Leaders</option>
-          </select>
-
           <button
-            onClick={fetchStrategyResults}
-            disabled={loading}
-            className="bg-slate-800 hover:bg-slate-700 text-slate-200 p-2 rounded-md transition disabled:opacity-50"
+            onClick={() => router.push("/scanner")}
+            className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 hover:text-white transition"
           >
-            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+            <ArrowLeft className="h-4 w-4" />
           </button>
-        </div>
-      </div>
-
-      {error && (
-        <div className="bg-rose-950/40 border border-rose-800 text-rose-300 p-3 rounded-md text-xs flex items-center gap-2">
-          <AlertCircle className="h-4 w-4 text-rose-400 shrink-0" />
-          <span>{error}</span>
-        </div>
-      )}
-
-      {/* Dynamic Candidate Table */}
-      <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
-        <table className="w-full text-left text-xs">
-          <thead className="bg-slate-950 text-slate-400 border-b border-slate-800 uppercase tracking-wider">
-            <tr>
-              <th className="p-3.5">Stock Name</th>
-              <th className="p-3.5">Ticker</th>
-              <th className="p-3.5">Market</th>
-              <th className="p-3.5">Action</th>
-              <th className="p-3.5">Trigger / Stop</th>
-              <th className="p-3.5">ATR (14)</th>
-              <th className="p-3.5">Trailing Pts</th>
-              <th className="p-3.5">RS Rank</th>
-              <th className="p-3.5 text-right">Execute</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-800">
-            {loading ? (
-              <tr>
-                <td colSpan={9} className="p-8 text-center text-slate-400">
-                  Scanning database & calculating order sizing...
-                </td>
-              </tr>
-            ) : results.length === 0 ? (
-              <tr>
-                <td colSpan={9} className="p-8 text-center text-slate-500">
-                  No strategy candidates found matching the criteria.
-                </td>
-              </tr>
-            ) : (
-              results.map((r) => (
-                <tr key={r.ticker} className="hover:bg-slate-800/50 transition">
-                  <td className="p-3.5 font-semibold text-white">{r.name}</td>
-                  <td className="p-3.5 font-mono text-emerald-400 font-bold">
-                    {r.ticker}
-                  </td>
-                  <td className="p-3.5">
-                    <span className="bg-slate-800 px-2 py-0.5 rounded text-[11px] text-slate-300 font-medium">
-                      {r.market}
-                    </span>
-                  </td>
-                  <td className="p-3.5">
-                    <span
-                      className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                        r.action === "BUY_TODAY"
-                          ? "bg-emerald-950 text-emerald-400 border border-emerald-800"
-                          : "bg-amber-950 text-amber-400 border border-amber-800"
-                      }`}
-                    >
-                      {r.action}
-                    </span>
-                  </td>
-                  <td className="p-3.5">
-                    <div className="font-mono text-white">
-                      {r.market === "NSE" ? "₹" : "$"}
-                      {r.trigger.toFixed(2)}
-                    </div>
-                    <div className="text-[10px] font-mono text-rose-400">
-                      Stop: {r.market === "NSE" ? "₹" : "$"}
-                      {r.stop.toFixed(2)}
-                    </div>
-                  </td>
-                  <td className="p-3.5 text-slate-300 font-mono">
-                    {r.atr.toFixed(1)}
-                  </td>
-                  <td className="p-3.5 text-slate-300 font-mono">
-                    {r.trailingPts.toFixed(1)}
-                  </td>
-                  <td className="p-3.5 text-slate-200 font-mono font-bold">
-                    {r.rs}
-                  </td>
-                  <td className="p-3.5 text-right">
-                    {r.action === "BUY_TODAY" && (
-                      <button
-                        onClick={() => handleOpenOrder(r)}
-                        className="bg-emerald-600 hover:bg-emerald-500 text-white px-3.5 py-1.5 rounded font-semibold text-xs transition shadow-sm"
-                      >
-                        Place Order
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Multi-Broker Order Modal */}
-      {selectedStock && (
-        <div className="fixed inset-0 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-          <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 max-w-lg w-full shadow-2xl space-y-5">
-            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="h-5 w-5 text-emerald-400" />
-                <div>
-                  <h3 className="font-bold text-white text-sm">
-                    Order Dispatch Ticket
-                  </h3>
-                  <p className="text-[11px] text-slate-400">
-                    {selectedStock.name} ({selectedStock.ticker})
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={() => setSelectedStock(null)}
-                className="text-slate-400 hover:text-white transition p-1"
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-xl font-bold text-white tracking-tight">
+                Signal Scanner Results
+              </h1>
+              <span className="bg-slate-800 text-slate-300 text-[10px] font-mono px-2 py-0.5 rounded">
+                {data?.market_label}
+              </span>
+              <span
+                className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                  data?.market_status === "HEALTHY"
+                    ? "bg-emerald-950 text-emerald-400 border border-emerald-800"
+                    : "bg-rose-950 text-rose-400 border border-rose-800"
+                }`}
               >
-                <X className="h-4 w-4" />
-              </button>
+                REGIME: {data?.market_status}
+              </span>
             </div>
-
-            {dispatchError && (
-              <div className="bg-rose-950/40 border border-rose-800 text-rose-300 p-2.5 rounded text-xs flex items-center gap-2">
-                <AlertCircle className="h-4 w-4 text-rose-400 shrink-0" />
-                <span>{dispatchError}</span>
-              </div>
-            )}
-
-            {orderPlaced ? (
-              <div className="text-center py-6 space-y-3">
-                <CheckCircle2 className="h-12 w-12 text-emerald-400 mx-auto" />
-                <h4 className="text-base font-bold text-white">
-                  Order Dispatched to {orderForm.broker}
-                </h4>
-                <p className="text-xs text-slate-400">
-                  {orderForm.orderType} Buy for {orderForm.quantity} shares of{" "}
-                  {selectedStock.ticker} routed successfully.
-                </p>
-                <button
-                  onClick={() => setSelectedStock(null)}
-                  className="mt-4 bg-slate-800 hover:bg-slate-700 text-xs px-5 py-2 rounded-md text-white font-medium transition"
-                >
-                  Done
-                </button>
-              </div>
-            ) : (
-              <div className="space-y-4 text-xs">
-                <div className="grid grid-cols-2 gap-4">
-                  {/* Broker Selection */}
-                  <div>
-                    <label className="block text-slate-400 font-semibold mb-1">
-                      Target Broker
-                    </label>
-                    <select
-                      value={orderForm.broker}
-                      onChange={(e) =>
-                        setOrderForm({ ...orderForm, broker: e.target.value })
-                      }
-                      className="w-full bg-slate-950 border border-slate-700 rounded-md p-2 text-emerald-400 font-bold outline-none focus:border-emerald-500"
-                    >
-                      <option value="ZERODHA">Zerodha (Kite)</option>
-                      <option value="UPSTOX">Upstox</option>
-                      <option value="IBKR">Interactive Brokers (IBKR)</option>
-                    </select>
-                  </div>
-
-                  {/* Order Type */}
-                  <div>
-                    <label className="block text-slate-400 font-semibold mb-1">
-                      Order Type
-                    </label>
-                    <select
-                      value={orderForm.orderType}
-                      onChange={(e) =>
-                        setOrderForm({
-                          ...orderForm,
-                          orderType: e.target.value,
-                        })
-                      }
-                      className="w-full bg-slate-950 border border-slate-700 rounded-md p-2 text-white font-medium outline-none focus:border-emerald-500"
-                    >
-                      <option value="LIMIT">LIMIT</option>
-                      <option value="MARKET">MARKET</option>
-                    </select>
-                  </div>
-
-                  {/* Exchange */}
-                  <div>
-                    <label className="block text-slate-400 font-semibold mb-1">
-                      Exchange
-                    </label>
-                    <select
-                      value={orderForm.exchange}
-                      onChange={(e) =>
-                        setOrderForm({ ...orderForm, exchange: e.target.value })
-                      }
-                      className="w-full bg-slate-950 border border-slate-700 rounded-md p-2 text-white font-medium outline-none focus:border-emerald-500"
-                    >
-                      <option value="NSE">NSE</option>
-                      <option value="BSE">BSE</option>
-                      <option value="LSE">LSE (UCITS ETFs)</option>
-                      <option value="">— Blank (US Direct)</option>
-                    </select>
-                  </div>
-
-                  {/* Quantity */}
-                  <div>
-                    <label className="block text-slate-400 font-semibold mb-1">
-                      Quantity (Shares)
-                    </label>
-                    <input
-                      type="number"
-                      value={orderForm.quantity}
-                      onChange={(e) =>
-                        setOrderForm({
-                          ...orderForm,
-                          quantity: Number(e.target.value),
-                        })
-                      }
-                      className="w-full bg-slate-950 border border-slate-700 rounded-md p-2 text-white font-mono outline-none focus:border-emerald-500"
-                    />
-                  </div>
-
-                  {/* Limit Price */}
-                  <div>
-                    <label className="block text-slate-400 font-semibold mb-1">
-                      {orderForm.orderType === "LIMIT"
-                        ? "Limit Price"
-                        : "Est. Market Price"}
-                    </label>
-                    <input
-                      type="number"
-                      step="0.05"
-                      disabled={orderForm.orderType === "MARKET"}
-                      value={orderForm.limitPrice}
-                      onChange={(e) =>
-                        setOrderForm({
-                          ...orderForm,
-                          limitPrice: Number(e.target.value),
-                        })
-                      }
-                      className="w-full bg-slate-950 border border-slate-700 rounded-md p-2 text-white font-mono outline-none focus:border-emerald-500 disabled:opacity-50"
-                    />
-                  </div>
-
-                  {/* Hard Stop Loss */}
-                  <div>
-                    <label className="block text-rose-400 font-semibold mb-1">
-                      Hard Stop Loss
-                    </label>
-                    <input
-                      type="number"
-                      step="0.05"
-                      value={orderForm.hardStop}
-                      onChange={(e) =>
-                        setOrderForm({
-                          ...orderForm,
-                          hardStop: Number(e.target.value),
-                        })
-                      }
-                      className="w-full bg-slate-950 border border-rose-900/60 rounded-md p-2 text-rose-300 font-mono outline-none focus:border-rose-500"
-                    />
-                  </div>
-
-                  {/* Trailing Stop */}
-                  <div className="col-span-2">
-                    <label className="block text-amber-400 font-semibold mb-1">
-                      Trailing Stop (Points)
-                    </label>
-                    <input
-                      type="number"
-                      step="0.1"
-                      value={orderForm.trailingStopPts}
-                      onChange={(e) =>
-                        setOrderForm({
-                          ...orderForm,
-                          trailingStopPts: Number(e.target.value),
-                        })
-                      }
-                      className="w-full bg-slate-950 border border-amber-900/60 rounded-md p-2 text-amber-300 font-mono outline-none focus:border-amber-500"
-                    />
-                  </div>
-                </div>
-
-                {/* Capital Summary */}
-                <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 flex justify-between items-center">
-                  <span className="text-slate-400">
-                    Total Capital Required:
-                  </span>
-                  <span className="font-mono font-bold text-white text-sm">
-                    {selectedStock.market === "NSE" ? "₹" : "$"}
-                    {(orderForm.quantity * orderForm.limitPrice).toLocaleString(
-                      undefined,
-                      {
-                        minimumFractionDigits: 2,
-                        maximumFractionDigits: 2,
-                      },
-                    )}
-                  </span>
-                </div>
-
-                {/* Submit Actions */}
-                <div className="pt-2 flex justify-end gap-2.5">
-                  <button
-                    onClick={() => setSelectedStock(null)}
-                    className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-2 rounded-md font-medium text-xs transition"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={handleDispatchOrder}
-                    disabled={isOrdering}
-                    className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold px-5 py-2 rounded-md text-xs flex items-center gap-1.5 transition disabled:opacity-50"
-                  >
-                    {isOrdering
-                      ? "Routing Order..."
-                      : `Submit to ${orderForm.broker}`}
-                  </button>
-                </div>
-              </div>
-            )}
+            <p className="text-xs text-slate-400 mt-1">
+              Scanned {data?.scanned_count || 0} stocks (from{" "}
+              {data?.total_universe_count || 0} universe constituents)
+            </p>
           </div>
         </div>
-      )}
+
+        <button
+          onClick={fetchSignals}
+          disabled={loading}
+          className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 px-3 py-1.5 rounded-md text-xs font-medium transition"
+        >
+          <RefreshCw
+            className={`h-3.5 w-3.5 text-emerald-400 ${loading ? "animate-spin" : ""}`}
+          />
+          <span>Rerun Scan</span>
+        </button>
+      </div>
+
+      {/* Signal Type Tabs */}
+      <div className="flex gap-2 border-b border-slate-800 pb-2">
+        <button
+          onClick={() => {
+            setActiveTab("BUY_TODAY");
+            setSelectedSignal(data?.buy_today[0] || null);
+          }}
+          className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold transition ${
+            activeTab === "BUY_TODAY"
+              ? "bg-emerald-950 text-emerald-300 border border-emerald-700"
+              : "text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <Zap className="h-3.5 w-3.5" />
+          <span>BUY TODAY ({data?.buy_today.length || 0})</span>
+        </button>
+
+        <button
+          onClick={() => {
+            setActiveTab("NEAR_BUYS");
+            setSelectedSignal(data?.near_buys[0] || null);
+          }}
+          className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold transition ${
+            activeTab === "NEAR_BUYS"
+              ? "bg-amber-950 text-amber-300 border border-amber-700"
+              : "text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <AlertTriangle className="h-3.5 w-3.5" />
+          <span>Volume Pending ({data?.near_buys.length || 0})</span>
+        </button>
+
+        <button
+          onClick={() => {
+            setActiveTab("WATCHLIST");
+            setSelectedSignal(data?.watchlist[0] || null);
+          }}
+          className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold transition ${
+            activeTab === "WATCHLIST"
+              ? "bg-blue-950 text-blue-300 border border-blue-700"
+              : "text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <Eye className="h-3.5 w-3.5" />
+          <span>Active Watchlist ({data?.watchlist.length || 0})</span>
+        </button>
+      </div>
+
+      {/* Main Grid: Signal Table & Trade Staging */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Table View */}
+        <div className="lg:col-span-2 bg-slate-900 border border-slate-800/80 rounded-xl overflow-hidden shadow-xl">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="border-b border-slate-800 text-[11px] font-semibold text-slate-400 uppercase tracking-wider bg-slate-950/40">
+                  <th className="py-3 px-4">Ticker</th>
+                  <th className="py-3 px-3">Close</th>
+                  <th className="py-3 px-3">Trigger Price</th>
+                  <th className="py-3 px-3">RS Rank</th>
+                  <th className="py-3 px-3">
+                    {activeTab === "WATCHLIST"
+                      ? "Distance %"
+                      : activeTab === "NEAR_BUYS"
+                        ? "Vol Req"
+                        : "Stop Loss"}
+                  </th>
+                  <th className="py-3 px-3 text-right">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/60 text-xs">
+                {loading ? (
+                  <tr>
+                    <td
+                      colSpan={6}
+                      className="py-12 text-center text-slate-500 font-mono"
+                    >
+                      Running enhanced Minervini VCP scan against database...
+                    </td>
+                  </tr>
+                ) : currentList.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={6}
+                      className="py-12 text-center text-slate-500 font-mono"
+                    >
+                      No setups in this category for current criteria.
+                    </td>
+                  </tr>
+                ) : (
+                  currentList.map((item) => {
+                    const isSelected = selectedSignal?.ticker === item.ticker;
+                    return (
+                      <tr
+                        key={item.ticker}
+                        onClick={() => setSelectedSignal(item)}
+                        className={`hover:bg-slate-800/40 cursor-pointer transition ${isSelected ? "bg-slate-800/60" : ""}`}
+                      >
+                        <td className="py-3 px-4 font-bold text-white font-mono">
+                          {item.ticker}
+                        </td>
+                        <td className="py-3 px-3 font-mono text-slate-200">
+                          {item.close.toFixed(2)}
+                        </td>
+                        <td className="py-3 px-3 font-mono text-emerald-400 font-semibold">
+                          {item.trigger_price.toFixed(2)}
+                        </td>
+                        <td className="py-3 px-3 font-mono text-purple-300">
+                          {item.rs_rank ? item.rs_rank.toFixed(1) : "—"}
+                        </td>
+                        <td className="py-3 px-3 font-mono text-slate-300">
+                          {activeTab === "WATCHLIST"
+                            ? `${item.pct_from_trigger?.toFixed(1)}%`
+                            : activeTab === "NEAR_BUYS"
+                              ? `${item.volume_needed?.toLocaleString()}`
+                              : `${item.hard_stop?.toFixed(2)}`}
+                        </td>
+                        <td className="py-3 px-3 text-right">
+                          <span
+                            className={`text-[10px] px-2 py-0.5 rounded font-bold ${
+                              item.status === "BUY_TODAY"
+                                ? "bg-emerald-950 text-emerald-400 border border-emerald-800"
+                                : item.status === "NEAR_BUY_VOLUME_PENDING"
+                                  ? "bg-amber-950 text-amber-400 border border-amber-800"
+                                  : "bg-blue-950 text-blue-400 border border-blue-800"
+                            }`}
+                          >
+                            {item.status}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Trade Execution / Staging Ticket */}
+        <div className="bg-slate-900 border border-slate-800/80 rounded-xl p-5 space-y-4 shadow-xl">
+          <div className="border-b border-slate-800 pb-3 flex justify-between items-center">
+            <h2 className="text-sm font-bold text-white">
+              Order Staging Ticket
+            </h2>
+            <span className="text-[11px] font-mono text-emerald-400">
+              {selectedSignal ? selectedSignal.ticker : "None Selected"}
+            </span>
+          </div>
+
+          {selectedSignal ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <div className="bg-slate-950 p-2.5 rounded border border-slate-800">
+                  <span className="text-slate-500 text-[10px] block">
+                    Trigger Price
+                  </span>
+                  <span className="font-mono text-white font-bold">
+                    {selectedSignal.trigger_price}
+                  </span>
+                </div>
+                <div className="bg-slate-950 p-2.5 rounded border border-slate-800">
+                  <span className="text-slate-500 text-[10px] block">
+                    Hard Stop (8%)
+                  </span>
+                  <span className="font-mono text-rose-400 font-bold">
+                    {selectedSignal.hard_stop ||
+                      (selectedSignal.trigger_price * 0.92).toFixed(2)}
+                  </span>
+                </div>
+              </div>
+
+              {selectedSignal.suggested_shares ? (
+                <div className="grid grid-cols-2 gap-3 text-xs">
+                  <div className="bg-slate-950 p-2.5 rounded border border-slate-800">
+                    <span className="text-slate-500 text-[10px] block">
+                      Calculated Shares
+                    </span>
+                    <span className="font-mono text-emerald-400 font-bold">
+                      {selectedSignal.suggested_shares}
+                    </span>
+                  </div>
+                  <div className="bg-slate-950 p-2.5 rounded border border-slate-800">
+                    <span className="text-slate-500 text-[10px] block">
+                      Position Sizing
+                    </span>
+                    <span className="font-mono text-slate-200 font-bold">
+                      ₹{selectedSignal.suggested_cost?.toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="space-y-2 text-xs">
+                <label className="text-slate-400">Broker Execution Desk</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {["ZERODHA", "UPSTOX", "IBKR"].map((broker) => (
+                    <button
+                      key={broker}
+                      className="py-1.5 text-center rounded border border-slate-800 text-[10px] font-bold text-slate-300 hover:border-emerald-500 hover:text-emerald-400 transition"
+                    >
+                      {broker}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <button
+                onClick={() =>
+                  alert(`Staging buy ticket for ${selectedSignal.ticker}`)
+                }
+                className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs py-2.5 rounded-lg shadow-lg transition"
+              >
+                <Send className="h-3.5 w-3.5" />
+                <span>Stage Order Ticket</span>
+              </button>
+            </div>
+          ) : (
+            <div className="py-16 text-center text-slate-500 text-xs">
+              Select a ticker from the table to view order parameters and stage
+              trade tickets.
+            </div>
+          )}
+        </div>
+      </div>
     </div>
+  );
+}
+
+export default function ResultsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="p-6 text-slate-500 font-mono">
+          Loading signal desk...
+        </div>
+      }
+    >
+      <ResultsContent />
+    </Suspense>
   );
 }
