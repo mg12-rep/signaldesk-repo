@@ -1,10 +1,37 @@
 "use client";
 
-import React, { useState } from "react";
-import { CheckCircle2, ShieldCheck, X } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import {
+  CheckCircle2,
+  ShieldCheck,
+  X,
+  RefreshCw,
+  AlertCircle,
+} from "lucide-react";
+
+interface CandidateResult {
+  name: string;
+  ticker: string;
+  market: string;
+  action: "BUY_TODAY" | "NEAR_BUY" | "WATCH";
+  trigger: number;
+  stop: number;
+  atr: number;
+  trailingPts: number;
+  shares: number;
+  rs: number;
+}
 
 export default function StrategyResults() {
-  const [selectedStock, setSelectedStock] = useState<any>(null);
+  const [results, setResults] = useState<CandidateResult[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedMarket, setSelectedMarket] = useState<string>("ALL");
+  const [selectedStrategy, setSelectedStrategy] = useState<string>("STAGE_2");
+
+  const [selectedStock, setSelectedStock] = useState<CandidateResult | null>(
+    null,
+  );
   const [orderForm, setOrderForm] = useState({
     broker: "ZERODHA",
     orderType: "LIMIT",
@@ -16,93 +43,100 @@ export default function StrategyResults() {
   });
   const [isOrdering, setIsOrdering] = useState(false);
   const [orderPlaced, setOrderPlaced] = useState(false);
+  const [dispatchError, setDispatchError] = useState<string | null>(null);
 
-  const results = [
-    {
-      name: "Trent Limited",
-      ticker: "TRENT",
-      market: "NSE",
-      action: "BUY_TODAY",
-      trigger: 5420.0,
-      stop: 4986.4,
-      atr: 142.5,
-      trailingPts: 433.6,
-      shares: 18,
-      rs: 96.4,
-    },
-    {
-      name: "Solar Industries",
-      ticker: "SOLARINDS",
-      market: "NSE",
-      action: "BUY_TODAY",
-      trigger: 10250.0,
-      stop: 9430.0,
-      atr: 280.0,
-      trailingPts: 820.0,
-      shares: 10,
-      rs: 92.1,
-    },
-    {
-      name: "NVIDIA Corp",
-      ticker: "NVDA",
-      market: "US",
-      action: "BUY_TODAY",
-      trigger: 182.5,
-      stop: 167.9,
-      atr: 6.4,
-      trailingPts: 14.6,
-      shares: 35,
-      rs: 98.2,
-    },
-    {
-      name: "Vanguard FTSE All-World",
-      ticker: "VWRA",
-      market: "LSE",
-      action: "BUY_TODAY",
-      trigger: 132.4,
-      stop: 121.8,
-      atr: 2.1,
-      trailingPts: 10.5,
-      shares: 45,
-      rs: 84.0,
-    },
-    {
-      name: "Polycab India",
-      ticker: "POLYCAB",
-      market: "NSE",
-      action: "NEAR_BUY",
-      trigger: 6850.0,
-      stop: 6302.0,
-      atr: 165.0,
-      trailingPts: 548.0,
-      shares: 14,
-      rs: 88.5,
-    },
-  ];
+  // Inside src/app/results/page.tsx:
+  const [customStockPath, setCustomStockPath] = useState<string>("");
 
-  const handleOpenOrder = (stock: any) => {
+  const fetchStrategyResults = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      let url = `http://localhost:8000/api/v1/scanner/run?exchange=${selectedMarket}&strategy=${selectedStrategy}`;
+      if (customStockPath.trim()) {
+        url += `&custom_stock_file=${encodeURIComponent(customStockPath.trim())}`;
+      }
+      const res = await fetch(url);
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(
+          errData.detail || "Failed to load candidate strategy signals",
+        );
+      }
+      const data = await res.json();
+      setResults(data);
+    } catch (err: any) {
+      setError(err.message || "Failed to retrieve results");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchStrategyResults();
+  }, [selectedMarket, selectedStrategy]);
+
+  const handleOpenOrder = (stock: CandidateResult) => {
     setSelectedStock(stock);
     setOrderPlaced(false);
+    setDispatchError(null);
 
-    // Smart-default broker & exchange based on market
     const defaultBroker =
-      stock.market === "US" || stock.market === "LSE" ? "IBKR" : "ZERODHA";
-    const defaultExchange = stock.market === "US" ? "" : stock.market;
+      stock.market === "US" || stock.market === "LSE" || stock.market === "TSE"
+        ? "IBKR"
+        : "ZERODHA";
 
     setOrderForm({
       broker: defaultBroker,
       orderType: "LIMIT",
       quantity: stock.shares,
       limitPrice: stock.trigger,
-      exchange: defaultExchange,
+      exchange: stock.market === "US" ? "" : stock.market,
       hardStop: stock.stop,
       trailingStopPts: stock.trailingPts,
     });
   };
 
+  const handleDispatchOrder = async () => {
+    if (!selectedStock) return;
+    setIsOrdering(true);
+    setDispatchError(null);
+
+    try {
+      const payload = {
+        symbol: selectedStock.ticker,
+        broker: orderForm.broker,
+        order_type: orderForm.orderType,
+        quantity: orderForm.quantity,
+        price: orderForm.limitPrice,
+        exchange: orderForm.exchange,
+        stop_loss: orderForm.hardStop,
+        trailing_stop_pts: orderForm.trailingStopPts,
+      };
+
+      const res = await fetch("http://localhost:8000/api/v1/orders/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.detail || "Broker order rejected");
+      }
+
+      setOrderPlaced(true);
+    } catch (err: any) {
+      setDispatchError(err.message || "Order placement failed");
+    } finally {
+      setIsOrdering(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
+      {/* Header & Filter Controls */}
+      <div className="flex flex-wrap justify-between items-center gap-4">
         <div>
           <h1 className="text-xl font-bold text-white">
             Strategy Execution Results
@@ -112,8 +146,46 @@ export default function StrategyResults() {
             order tickets
           </p>
         </div>
+
+        <div className="flex items-center gap-3">
+          <select
+            value={selectedMarket}
+            onChange={(e) => setSelectedMarket(e.target.value)}
+            className="bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-md px-3 py-2 outline-none focus:border-blue-500"
+          >
+            <option value="ALL">All Markets</option>
+            <option value="US">US Universe</option>
+            <option value="NSE">NSE 500</option>
+          </select>
+
+          <select
+            value={selectedStrategy}
+            onChange={(e) => setSelectedStrategy(e.target.value)}
+            className="bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-md px-3 py-2 outline-none focus:border-blue-500"
+          >
+            <option value="STAGE_2">Minervini Stage 2</option>
+            <option value="CONNORS_RSI">Connors RSI</option>
+            <option value="MOMENTUM">Momentum Leaders</option>
+          </select>
+
+          <button
+            onClick={fetchStrategyResults}
+            disabled={loading}
+            className="bg-slate-800 hover:bg-slate-700 text-slate-200 p-2 rounded-md transition disabled:opacity-50"
+          >
+            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+          </button>
+        </div>
       </div>
 
+      {error && (
+        <div className="bg-rose-950/40 border border-rose-800 text-rose-300 p-3 rounded-md text-xs flex items-center gap-2">
+          <AlertCircle className="h-4 w-4 text-rose-400 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {/* Dynamic Candidate Table */}
       <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
         <table className="w-full text-left text-xs">
           <thead className="bg-slate-950 text-slate-400 border-b border-slate-800 uppercase tracking-wider">
@@ -130,59 +202,73 @@ export default function StrategyResults() {
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800">
-            {results.map((r) => (
-              <tr key={r.ticker} className="hover:bg-slate-800/50 transition">
-                <td className="p-3.5 font-semibold text-white">{r.name}</td>
-                <td className="p-3.5 font-mono text-emerald-400 font-bold">
-                  {r.ticker}
-                </td>
-                <td className="p-3.5">
-                  <span className="bg-slate-800 px-2 py-0.5 rounded text-[11px] text-slate-300 font-medium">
-                    {r.market}
-                  </span>
-                </td>
-                <td className="p-3.5">
-                  <span
-                    className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                      r.action === "BUY_TODAY"
-                        ? "bg-emerald-950 text-emerald-400 border border-emerald-800"
-                        : "bg-amber-950 text-amber-400 border border-amber-800"
-                    }`}
-                  >
-                    {r.action}
-                  </span>
-                </td>
-                <td className="p-3.5">
-                  <div className="font-mono text-white">
-                    {r.market === "US" ? "$" : "₹"}
-                    {r.trigger.toFixed(2)}
-                  </div>
-                  <div className="text-[10px] font-mono text-rose-400">
-                    Stop: {r.market === "US" ? "$" : "₹"}
-                    {r.stop.toFixed(2)}
-                  </div>
-                </td>
-                <td className="p-3.5 text-slate-300 font-mono">
-                  {r.atr.toFixed(1)}
-                </td>
-                <td className="p-3.5 text-slate-300 font-mono">
-                  {r.trailingPts.toFixed(1)}
-                </td>
-                <td className="p-3.5 text-slate-200 font-mono font-bold">
-                  {r.rs}
-                </td>
-                <td className="p-3.5 text-right">
-                  {r.action === "BUY_TODAY" && (
-                    <button
-                      onClick={() => handleOpenOrder(r)}
-                      className="bg-emerald-600 hover:bg-emerald-500 text-white px-3.5 py-1.5 rounded font-semibold text-xs transition shadow-sm"
-                    >
-                      Place Order
-                    </button>
-                  )}
+            {loading ? (
+              <tr>
+                <td colSpan={9} className="p-8 text-center text-slate-400">
+                  Scanning database & calculating order sizing...
                 </td>
               </tr>
-            ))}
+            ) : results.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="p-8 text-center text-slate-500">
+                  No strategy candidates found matching the criteria.
+                </td>
+              </tr>
+            ) : (
+              results.map((r) => (
+                <tr key={r.ticker} className="hover:bg-slate-800/50 transition">
+                  <td className="p-3.5 font-semibold text-white">{r.name}</td>
+                  <td className="p-3.5 font-mono text-emerald-400 font-bold">
+                    {r.ticker}
+                  </td>
+                  <td className="p-3.5">
+                    <span className="bg-slate-800 px-2 py-0.5 rounded text-[11px] text-slate-300 font-medium">
+                      {r.market}
+                    </span>
+                  </td>
+                  <td className="p-3.5">
+                    <span
+                      className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                        r.action === "BUY_TODAY"
+                          ? "bg-emerald-950 text-emerald-400 border border-emerald-800"
+                          : "bg-amber-950 text-amber-400 border border-amber-800"
+                      }`}
+                    >
+                      {r.action}
+                    </span>
+                  </td>
+                  <td className="p-3.5">
+                    <div className="font-mono text-white">
+                      {r.market === "NSE" ? "₹" : "$"}
+                      {r.trigger.toFixed(2)}
+                    </div>
+                    <div className="text-[10px] font-mono text-rose-400">
+                      Stop: {r.market === "NSE" ? "₹" : "$"}
+                      {r.stop.toFixed(2)}
+                    </div>
+                  </td>
+                  <td className="p-3.5 text-slate-300 font-mono">
+                    {r.atr.toFixed(1)}
+                  </td>
+                  <td className="p-3.5 text-slate-300 font-mono">
+                    {r.trailingPts.toFixed(1)}
+                  </td>
+                  <td className="p-3.5 text-slate-200 font-mono font-bold">
+                    {r.rs}
+                  </td>
+                  <td className="p-3.5 text-right">
+                    {r.action === "BUY_TODAY" && (
+                      <button
+                        onClick={() => handleOpenOrder(r)}
+                        className="bg-emerald-600 hover:bg-emerald-500 text-white px-3.5 py-1.5 rounded font-semibold text-xs transition shadow-sm"
+                      >
+                        Place Order
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
       </div>
@@ -191,7 +277,6 @@ export default function StrategyResults() {
       {selectedStock && (
         <div className="fixed inset-0 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 z-50">
           <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 max-w-lg w-full shadow-2xl space-y-5">
-            {/* Modal Header */}
             <div className="flex justify-between items-center border-b border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <ShieldCheck className="h-5 w-5 text-emerald-400" />
@@ -212,6 +297,13 @@ export default function StrategyResults() {
               </button>
             </div>
 
+            {dispatchError && (
+              <div className="bg-rose-950/40 border border-rose-800 text-rose-300 p-2.5 rounded text-xs flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 text-rose-400 shrink-0" />
+                <span>{dispatchError}</span>
+              </div>
+            )}
+
             {orderPlaced ? (
               <div className="text-center py-6 space-y-3">
                 <CheckCircle2 className="h-12 w-12 text-emerald-400 mx-auto" />
@@ -220,7 +312,7 @@ export default function StrategyResults() {
                 </h4>
                 <p className="text-xs text-slate-400">
                   {orderForm.orderType} Buy for {orderForm.quantity} shares of{" "}
-                  {selectedStock.ticker} routed via {orderForm.broker}.
+                  {selectedStock.ticker} routed successfully.
                 </p>
                 <button
                   onClick={() => setSelectedStock(null)}
@@ -231,9 +323,8 @@ export default function StrategyResults() {
               </div>
             ) : (
               <div className="space-y-4 text-xs">
-                {/* Inputs Grid */}
                 <div className="grid grid-cols-2 gap-4">
-                  {/* 1. Target Broker Dropdown */}
+                  {/* Broker Selection */}
                   <div>
                     <label className="block text-slate-400 font-semibold mb-1">
                       Target Broker
@@ -251,7 +342,7 @@ export default function StrategyResults() {
                     </select>
                   </div>
 
-                  {/* 2. Order Type Dropdown */}
+                  {/* Order Type */}
                   <div>
                     <label className="block text-slate-400 font-semibold mb-1">
                       Order Type
@@ -271,7 +362,7 @@ export default function StrategyResults() {
                     </select>
                   </div>
 
-                  {/* 3. Exchange Dropdown */}
+                  {/* Exchange */}
                   <div>
                     <label className="block text-slate-400 font-semibold mb-1">
                       Exchange
@@ -290,7 +381,7 @@ export default function StrategyResults() {
                     </select>
                   </div>
 
-                  {/* 4. Quantity Input */}
+                  {/* Quantity */}
                   <div>
                     <label className="block text-slate-400 font-semibold mb-1">
                       Quantity (Shares)
@@ -308,7 +399,7 @@ export default function StrategyResults() {
                     />
                   </div>
 
-                  {/* Limit Price Input */}
+                  {/* Limit Price */}
                   <div>
                     <label className="block text-slate-400 font-semibold mb-1">
                       {orderForm.orderType === "LIMIT"
@@ -330,7 +421,7 @@ export default function StrategyResults() {
                     />
                   </div>
 
-                  {/* 5. Hard Stop-Loss */}
+                  {/* Hard Stop Loss */}
                   <div>
                     <label className="block text-rose-400 font-semibold mb-1">
                       Hard Stop Loss
@@ -349,7 +440,7 @@ export default function StrategyResults() {
                     />
                   </div>
 
-                  {/* 6. Trailing Stop Loss Points */}
+                  {/* Trailing Stop */}
                   <div className="col-span-2">
                     <label className="block text-amber-400 font-semibold mb-1">
                       Trailing Stop (Points)
@@ -369,21 +460,24 @@ export default function StrategyResults() {
                   </div>
                 </div>
 
-                {/* Summary Box */}
+                {/* Capital Summary */}
                 <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 flex justify-between items-center">
                   <span className="text-slate-400">
                     Total Capital Required:
                   </span>
                   <span className="font-mono font-bold text-white text-sm">
-                    {selectedStock.market === "US" ? "$" : "₹"}
+                    {selectedStock.market === "NSE" ? "₹" : "$"}
                     {(orderForm.quantity * orderForm.limitPrice).toLocaleString(
                       undefined,
-                      { minimumFractionDigits: 2, maximumFractionDigits: 2 },
+                      {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2,
+                      },
                     )}
                   </span>
                 </div>
 
-                {/* Actions */}
+                {/* Submit Actions */}
                 <div className="pt-2 flex justify-end gap-2.5">
                   <button
                     onClick={() => setSelectedStock(null)}
@@ -392,13 +486,7 @@ export default function StrategyResults() {
                     Cancel
                   </button>
                   <button
-                    onClick={() => {
-                      setIsOrdering(true);
-                      setTimeout(() => {
-                        setIsOrdering(false);
-                        setOrderPlaced(true);
-                      }, 700);
-                    }}
+                    onClick={handleDispatchOrder}
                     disabled={isOrdering}
                     className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold px-5 py-2 rounded-md text-xs flex items-center gap-1.5 transition disabled:opacity-50"
                   >

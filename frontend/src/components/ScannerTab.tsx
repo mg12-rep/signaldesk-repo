@@ -1,126 +1,165 @@
 "use client";
-import { useState } from "react";
-import { apiClient } from "@/lib/api";
 
-export function ScannerTab({
-  onSelectStock,
-}: {
-  onSelectStock: (stock: any) => void;
-}) {
-  const [loading, setLoading] = useState(false);
-  const [results, setResults] = useState<{ minervini: any[]; connors: any[] }>({
-    minervini: [],
-    connors: [],
-  });
-  const [activeStrategy, setActiveStrategy] = useState<"MINERVINI" | "CONNORS">(
-    "MINERVINI",
-  );
+import React, { useState, useEffect } from "react";
 
-  const handleScan = async () => {
+interface ScanResult {
+  symbol: string;
+  exchange: string;
+  close: number;
+  sma_50: number;
+  sma_150: number;
+  sma_200: number;
+  rs_rating: number;
+  stage_2_pass: boolean;
+  signal_type: string;
+}
+
+export default function ScannerTab() {
+  const [exchange, setExchange] = useState<"US" | "NSE" | "ALL">("US");
+  const [strategy, setStrategy] = useState<string>("STAGE_2");
+  const [results, setResults] = useState<ScanResult[]>([]);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchScanResults = async () => {
     setLoading(true);
+    setError(null);
     try {
-      const data = await apiClient.runScanner(activeStrategy);
+      const res = await fetch(
+        `http://localhost:8000/api/v1/scanner/run?exchange=${exchange}&strategy=${strategy}`,
+      );
+      if (!res.ok) throw new Error("Failed to fetch scanner results");
+      const data = await res.json();
       setResults(data);
-    } catch (err) {
-      console.error("Scanner error:", err);
+    } catch (err: any) {
+      setError(err.message || "An error occurred");
     } finally {
       setLoading(false);
     }
   };
 
-  const rows =
-    activeStrategy === "MINERVINI"
-      ? results.minervini || []
-      : results.connors || [];
+  useEffect(() => {
+    fetchScanResults();
+  }, [exchange, strategy]);
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="flex gap-2">
-          <button
-            onClick={() => setActiveStrategy("MINERVINI")}
-            className={`px-3 py-1.5 text-xs rounded font-medium ${activeStrategy === "MINERVINI" ? "bg-emerald-600 text-white" : "bg-zinc-800 text-zinc-400"}`}
+    <div className="p-6 bg-slate-900 text-white rounded-lg shadow-md">
+      {/* Controls Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-4 mb-6 pb-4 border-b border-slate-800">
+        <div>
+          <h2 className="text-xl font-bold tracking-wide">Strategy Scanner</h2>
+          <p className="text-sm text-slate-400">
+            Live Stage 2 Trend Template & Momentum Screener
+          </p>
+        </div>
+
+        <div className="flex items-center gap-3">
+          {/* Exchange Filter */}
+          <select
+            value={exchange}
+            onChange={(e) => setExchange(e.target.value as any)}
+            className="bg-slate-800 border border-slate-700 text-sm rounded-md px-3 py-2 text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
           >
-            Stage 2 Breakout (Minervini)
-          </button>
-          <button
-            onClick={() => setActiveStrategy("CONNORS")}
-            className={`px-3 py-1.5 text-xs rounded font-medium ${activeStrategy === "CONNORS" ? "bg-emerald-600 text-white" : "bg-zinc-800 text-zinc-400"}`}
+            <option value="US">US Universe (S&P 500 / NASDAQ)</option>
+            <option value="NSE">NSE 500</option>
+            <option value="ALL">All Markets</option>
+          </select>
+
+          {/* Strategy Selector */}
+          <select
+            value={strategy}
+            onChange={(e) => setStrategy(e.target.value)}
+            className="bg-slate-800 border border-slate-700 text-sm rounded-md px-3 py-2 text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
           >
-            Connors RSI(2) Pullback
+            <option value="STAGE_2">Minervini Stage 2 Breakout</option>
+            <option value="CONNORS_RSI">Connors RSI Mean Reversion</option>
+            <option value="MOMENTUM">Relative Strength Leader</option>
+          </select>
+
+          <button
+            onClick={fetchScanResults}
+            disabled={loading}
+            className="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded-md text-sm font-semibold transition disabled:opacity-50"
+          >
+            {loading ? "Scanning..." : "Run Scan"}
           </button>
         </div>
-        <button
-          onClick={handleScan}
-          disabled={loading}
-          className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded font-medium disabled:opacity-50"
-        >
-          {loading ? "Running Scan..." : "Run Scanner"}
-        </button>
       </div>
 
-      <div className="border border-zinc-800 rounded overflow-hidden">
-        <table className="w-full text-left text-xs">
-          <thead className="bg-zinc-900 text-zinc-400 border-b border-zinc-800">
-            <tr>
-              <th className="p-2.5">Symbol</th>
-              <th className="p-2.5">Close</th>
-              {activeStrategy === "MINERVINI" ? (
-                <>
-                  <th className="p-2.5">50 SMA</th>
-                  <th className="p-2.5">200 SMA</th>
-                  <th className="p-2.5">Dist to 52W High</th>
-                  <th className="p-2.5">Vol Ratio</th>
-                </>
-              ) : (
-                <>
-                  <th className="p-2.5">200 SMA</th>
-                  <th className="p-2.5">RSI(2)</th>
-                  <th className="p-2.5">Action</th>
-                </>
-              )}
-              <th className="p-2.5 text-right">Execute</th>
+      {/* Error Notice */}
+      {error && (
+        <div className="bg-red-900/40 border border-red-500 text-red-200 px-4 py-3 rounded mb-4 text-sm">
+          {error}
+        </div>
+      )}
+
+      {/* Dynamic Results Table */}
+      <div className="overflow-x-auto">
+        <table className="w-full text-left border-collapse">
+          <thead>
+            <tr className="border-b border-slate-800 text-xs font-semibold uppercase text-slate-400 bg-slate-950/40">
+              <th className="py-3 px-4">Symbol</th>
+              <th className="py-3 px-4">Market</th>
+              <th className="py-3 px-4">LTP</th>
+              <th className="py-3 px-4">SMA 50</th>
+              <th className="py-3 px-4">SMA 150</th>
+              <th className="py-3 px-4">SMA 200</th>
+              <th className="py-3 px-4">RS Score</th>
+              <th className="py-3 px-4">Status</th>
+              <th className="py-3 px-4 text-right">Action</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-zinc-800 font-mono">
-            {rows.map((row) => (
-              <tr key={row.symbol} className="hover:bg-zinc-900/50">
-                <td className="p-2.5 font-bold text-white">{row.symbol}</td>
-                <td className="p-2.5">₹{row.close}</td>
-                {activeStrategy === "MINERVINI" ? (
-                  <>
-                    <td className="p-2.5 text-zinc-400">{row.sma50}</td>
-                    <td className="p-2.5 text-zinc-400">{row.sma200}</td>
-                    <td className="p-2.5 text-emerald-400">
-                      {row.dist52wHighPct}%
-                    </td>
-                    <td className="p-2.5">{row.volumeRatio}x</td>
-                  </>
-                ) : (
-                  <>
-                    <td className="p-2.5 text-zinc-400">{row.sma200}</td>
-                    <td className="p-2.5 text-rose-400 font-bold">
-                      {row.rsi2}
-                    </td>
-                    <td className="p-2.5 text-emerald-400">{row.action}</td>
-                  </>
-                )}
-                <td className="p-2.5 text-right">
-                  <button
-                    onClick={() => onSelectStock(row)}
-                    className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[11px]"
-                  >
-                    Trade
-                  </button>
-                </td>
-              </tr>
-            ))}
-            {rows.length === 0 && !loading && (
+          <tbody className="divide-y divide-slate-800 text-sm">
+            {loading ? (
               <tr>
-                <td colSpan={7} className="p-4 text-center text-zinc-500">
-                  No signals found. Click "Run Scanner" to scan the universe.
+                <td colSpan={9} className="py-8 text-center text-slate-400">
+                  Running quantitative filters across database...
                 </td>
               </tr>
+            ) : results.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="py-8 text-center text-slate-500">
+                  No stocks currently match the {strategy} criteria for{" "}
+                  {exchange}.
+                </td>
+              </tr>
+            ) : (
+              results.map((row) => (
+                <tr
+                  key={row.symbol}
+                  className="hover:bg-slate-800/50 transition"
+                >
+                  <td className="py-3 px-4 font-bold text-white">
+                    {row.symbol}
+                  </td>
+                  <td className="py-3 px-4 text-slate-400">{row.exchange}</td>
+                  <td className="py-3 px-4 font-medium">
+                    ${row.close.toFixed(2)}
+                  </td>
+                  <td className="py-3 px-4 text-slate-300">
+                    ${row.sma_50.toFixed(2)}
+                  </td>
+                  <td className="py-3 px-4 text-slate-300">
+                    ${row.sma_150.toFixed(2)}
+                  </td>
+                  <td className="py-3 px-4 text-slate-300">
+                    ${row.sma_200.toFixed(2)}
+                  </td>
+                  <td className="py-3 px-4 font-semibold text-emerald-400">
+                    +{row.rs_rating}%
+                  </td>
+                  <td className="py-3 px-4">
+                    <span className="bg-emerald-950 text-emerald-300 border border-emerald-800 text-xs px-2.5 py-0.5 rounded font-medium">
+                      Stage 2 Valid
+                    </span>
+                  </td>
+                  <td className="py-3 px-4 text-right">
+                    <button className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium px-3 py-1.5 rounded border border-slate-700 transition">
+                      Trade
+                    </button>
+                  </td>
+                </tr>
+              ))
             )}
           </tbody>
         </table>

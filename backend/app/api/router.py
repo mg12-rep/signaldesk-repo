@@ -1,4 +1,5 @@
 from app.api.backtest import router as backtest_router
+from app.api.dashboard import router as dashboard_router
 
 # Import feature routers
 from app.api.health import router as health_router
@@ -27,3 +28,4 @@ api_router.include_router(orders_router, prefix="/orders", tags=["Orders"])
 api_router.include_router(scanner_router, prefix="/scanner", tags=["Scanner"])
 api_router.include_router(backtest_router, prefix="/backtest", tags=["Backtest"])
 api_router.include_router(sync_router, prefix="/sync", tags=["Data Sync"])
+api_router.include_router(dashboard_router, prefix="/dashboard", tags=["dashboard"])

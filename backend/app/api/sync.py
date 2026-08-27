@@ -2,11 +2,8 @@ import logging
 
 from app.services.ingest_data import run_eod_pipeline
 from app.services.seed_nse_data import get_all_active_symbols, run_full_universe_sync
-from app.services.seed_us_data import seed_ibkr_universe
+from app.services.seed_us_data import seed_us_universe_from_db
 from fastapi import APIRouter, BackgroundTasks
-
-logger = logging.getLogger("sync_router")
-router = APIRouter()
 
 logger = logging.getLogger("sync_router")
 router = APIRouter()
@@ -15,7 +12,7 @@ router = APIRouter()
 def background_us_sync():
     logger.info("🚀 [IBKR SYNC] Connecting to local TWS session...")
     try:
-        seed_ibkr_universe()
+        seed_us_universe_from_db()
         logger.info("✅ [IBKR SYNC] US & Global universe data sync complete.")
     except Exception as e:
         logger.error(f"❌ [IBKR SYNC FAILED] Error: {e}", exc_info=True)
@@ -23,10 +20,10 @@ def background_us_sync():
 
 @router.post("/us")
 def trigger_us_sync(background_tasks: BackgroundTasks):
-    background_tasks.add_task(background_us_sync)
+    background_tasks.add_task(seed_us_universe_from_db)
     return {
         "status": "SUCCESS",
-        "message": "US / Global ETF sync initiated via local TWS API session.",
+        "message": "S&P 500 + US ETF ingestion started in background via TWS.",
     }
 
 
