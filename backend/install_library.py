@@ -11,8 +11,8 @@ def install_library(package_name):
 
 # Example: Installing alembic automatically
 try:
-    import ib_insync as almb
+    import kiteconnect as almb
 except ImportError:
     # If the library isn't found, install it on the fly
-    install_library("ib_insync")
-    # import psycopg1 as almb
+    install_library("kiteconnect")
+    # import python-multipart as almb

@@ -108,7 +108,7 @@ Run:
 # /*"ticker_filter_file": "C:/Work/SignalDesk-docs/fundamental_filtered_stocks.csv"*/
 
 DEFAULT_CONFIG = {
-    "db_url": "postgresql://postgres:postgres@localhost:5432/signaldesk",
+    "db_url": "postgresql+psycopg://signaldesk_user:signaldesk123@localhost:5432/signaldesk",
     "markets": {
         # market_label -> {"index_symbol_id": <id>, "benchmark_symbol_id": <id>}
         "SP500": {"index_symbol_id": 559, "benchmark_symbol_id": 559},

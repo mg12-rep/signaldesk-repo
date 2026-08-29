@@ -45,6 +45,7 @@ export default function DashboardPage() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [syncingMarket, setSyncingMarket] = useState<"NSE" | "US" | null>(null);
 
   const fetchDashboardData = async () => {
     setLoading(true);
@@ -66,7 +67,7 @@ export default function DashboardPage() {
   }, []);
 
   const triggerSync = async (market: "US" | "NSE") => {
-    setIsSyncing(true);
+    setSyncingMarket(market);
     try {
       await fetch(`http://localhost:8000/api/v1/sync/${market.toLowerCase()}`, {
         method: "POST",
@@ -74,7 +75,7 @@ export default function DashboardPage() {
     } catch (e) {
       console.error("Sync failed", e);
     } finally {
-      setTimeout(() => setIsSyncing(false), 1200);
+      setTimeout(() => setSyncingMarket(null), 1200);
     }
   };
 
@@ -100,24 +101,32 @@ export default function DashboardPage() {
         </div>
 
         <div className="flex items-center gap-2.5">
+          {/* Sync NSE Button */}
           <button
             onClick={() => triggerSync("NSE")}
-            disabled={isSyncing}
-            className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 px-3 py-1.5 rounded-md text-xs font-medium transition"
+            disabled={syncingMarket !== null}
+            className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 px-3 py-1.5 rounded-md text-xs font-medium transition disabled:opacity-50"
           >
-            <Database className="h-3.5 w-3.5 text-blue-400" />
-            <span>Sync NSE</span>
+            <Database
+              className={`h-3.5 w-3.5 text-blue-400 ${syncingMarket === "NSE" ? "animate-spin" : ""}`}
+            />
+            <span>
+              {syncingMarket === "NSE" ? "Syncing NSE..." : "Sync NSE"}
+            </span>
           </button>
 
+          {/* Sync US Button */}
           <button
             onClick={() => triggerSync("US")}
-            disabled={isSyncing}
-            className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 px-3 py-1.5 rounded-md text-xs font-medium transition"
+            disabled={syncingMarket !== null}
+            className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 px-3 py-1.5 rounded-md text-xs font-medium transition disabled:opacity-50"
           >
             <RefreshCw
-              className={`h-3.5 w-3.5 text-emerald-400 ${isSyncing ? "animate-spin" : ""}`}
+              className={`h-3.5 w-3.5 text-emerald-400 ${syncingMarket === "US" ? "animate-spin" : ""}`}
             />
-            <span>Sync US (IBKR)</span>
+            <span>
+              {syncingMarket === "US" ? "Syncing US..." : "Sync US (IBKR)"}
+            </span>
           </button>
         </div>
       </div>

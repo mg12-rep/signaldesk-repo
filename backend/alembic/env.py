@@ -11,9 +11,9 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 # 1. Add project root to sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# 2. Import Base and models so Alembic can detect tables
+# 2. Import Base directly from app.db.models
+import app.db.models  # Ensures Symbol, Holding, Order, Trade are registered
 from app.db.models import Base
-import app.db.models  # noqa
 
 # 3. Alembic Config object
 config = context.config
@@ -23,24 +23,43 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
+# List of performance index names created manually to ignore during autogenerate
+IGNORED_INDEXES = {
+    "idx_symbols_trading_symbol",
+    "idx_symbols_exchange_active",
+    "idx_market_data_history_symbol_date",
+    "idx_market_data_eod_symbol_date",
+    "idx_index_constituents_composite",
+    "idx_market_data_symbol_date",
+}
+
+
+def include_object(object, name, type_, reflected, compare_to):
+    # Skip manual performance indexes
+    if type_ == "index" and name in IGNORED_INDEXES:
+        return False
+    return True
+
 
 def run_migrations_offline() -> None:
-    """Run migrations in 'offline' mode."""
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        include_object=include_object,  # <-- Added
     )
-
     with context.begin_transaction():
         context.run_migrations()
 
 
 def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)
-
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        include_object=include_object,  # <-- Added
+    )
     with context.begin_transaction():
         context.run_migrations()
 

@@ -1,0 +1,18 @@
+{
+  "data_dirs": {"SP500": "data/sp500_stocks"},
+  "index_files": {"SP500": "data/SPY_index.csv"},
+  "output_dir": "output_bbobv_sp500",
+  "starting_capital": 1000000.0,
+  "min_avg_volume": 50000,
+  "bb_period": 20,
+  "bb_std": 2.0,
+  "atr_period": 14,
+  "atr_multiplier": 2.0,
+  "obv_lookback_days": 5,
+  "obv_mode": "net",
+  "max_buy_wait_days": 5,
+  "max_holding_days": 15,
+  "hard_stop_pct": 0.08,
+  "risk_pct_per_trade": 0.02,
+  "reinvest_fraction": 1.0
+}

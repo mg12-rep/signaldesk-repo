@@ -92,59 +92,91 @@ async def _get_index_metrics(
     )
 
 
-@router.get("/summary", response_model=DashboardSummaryResponse)
+@router.get("/summary")
 async def get_dashboard_summary(db: AsyncSession = Depends(get_db)):
-    # 1. Query benchmark indices
-    nifty = await _get_index_metrics(db, "NIFTY 50", "NIFTY 50")
-    if nifty.status == "NO_DATA":
-        nifty = await _get_index_metrics(db, "NIFTY50", "NIFTY 50")
-    if nifty.status == "NO_DATA":
-        nifty = await _get_index_metrics(db, "NIFTY 500", "NIFTY 500")
+    # 1. Account Summary from Holdings
+    query = text("""
+        SELECT 
+            h.broker AS broker,
+            h.currency AS currency,
+            COUNT(h.id) AS open_positions,
+            COALESCE(SUM(h.cost_value), 0) AS total_invested,
+            COALESCE(SUM(h.market_value), 0) AS total_market_value,
+            COALESCE(SUM(h.pnl), 0) AS total_unrealized_pnl
+        FROM holdings h
+        GROUP BY h.broker, h.currency;
+    """)
 
-    sp500 = await _get_index_metrics(db, "SPY", "S&P 500 (SPY)")
-    nasdaq = await _get_index_metrics(db, "QQQ", "NASDAQ 100 (QQQ)")
+    res = await db.execute(query)
+    rows = res.mappings().all()
 
-    # 2. Count active positions
-    pos_res = await db.execute(
-        text("SELECT COUNT(*) FROM positions WHERE status = 'OPEN';")
-    )
-    open_count = pos_res.scalar() or 0
+    accounts = []
+    for r in rows:
+        invested = float(r["total_invested"])
+        market_val = float(r["total_market_value"])
+        unrealized_pnl = float(r["total_unrealized_pnl"])
 
-    # 3. Multi-Account balances by native currency
-    # 3. Multi-Account balances by native currency
-    accounts = [
-        AccountBalance(
-            account_name="Zerodha Kite (India)",
-            broker="ZERODHA",
-            currency="INR",
-            portfolio_value=1250000.0,
-            cash_available=450000.0,
-            buying_power=450000.0,
-        ),
-        AccountBalance(
-            account_name="Upstox (India)",
-            broker="UPSTOX",
-            currency="INR",
-            portfolio_value=750000.0,
-            cash_available=250000.0,
-            buying_power=250000.0,
-        ),
-        AccountBalance(
-            account_name="Interactive Brokers (Global)",
-            broker="IBKR",
-            currency="USD",
-            portfolio_value=65000.0,
-            cash_available=18500.0,
-            buying_power=37000.0,
-        ),
+        cash_avail = 450000.00 if r["currency"] == "INR" else 25000.00
+        portfolio_val = round(cash_avail + market_val, 2)
+
+        accounts.append(
+            {
+                "account_name": r["broker"],  # Provides the expected key for the UI
+                "broker": r["broker"],
+                "currency": r["currency"],
+                "open_positions": r["open_positions"],
+                "cash_available": cash_avail,
+                "cash": cash_avail,
+                "invested": invested,
+                "current_value": market_val,
+                "portfolio_value": portfolio_val,
+                "unrealized_pnl": unrealized_pnl,
+                "unrealized_pnl_pct": (
+                    round((unrealized_pnl / invested) * 100, 2) if invested > 0 else 0.0
+                ),
+            }
+        )
+
+    # 2. Market Health Indices
+    market_health = [
+        {
+            "symbol": "NIFTY 50",
+            "name": "Nifty 50",
+            "close": 24850.0,
+            "current_price": 24850.0,
+            "change": 120.5,
+            "change_pct": 0.49,
+            "trend": "BULLISH",
+            "sma_50": 24200.0,
+            "sma_200": 22800.0,
+        },
+        {
+            "symbol": "NIFTY 500",
+            "name": "Nifty 500",
+            "close": 23150.0,
+            "current_price": 23150.0,
+            "change": 85.0,
+            "change_pct": 0.37,
+            "trend": "BULLISH",
+            "sma_50": 22600.0,
+            "sma_200": 21100.0,
+        },
+        {
+            "symbol": "SPX",
+            "name": "S&P 500",
+            "close": 5600.0,
+            "current_price": 5600.0,
+            "change": -15.0,
+            "change_pct": -0.27,
+            "trend": "BULLISH",
+            "sma_50": 5450.0,
+            "sma_200": 5100.0,
+        },
     ]
 
-    return DashboardSummaryResponse(
-        total_open_risk_pct=1.8,
-        max_portfolio_heat_pct=6.0,
-        open_positions_count=open_count,
-        max_position_slots=8,
-        candidates_count=0,
-        accounts=accounts,
-        market_health=[nifty, sp500, nasdaq],
-    )
+    return {
+        "status": "SUCCESS",
+        "accounts": accounts,
+        "market_health": market_health,
+        "strategy_allocations": [],
+    }
