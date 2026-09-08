@@ -1,10 +1,30 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
 
 class BaseBrokerAdapter(ABC):
+    @abstractmethod
+    def get_cash_balance(self) -> float:
+        """Fetch available cash balance / usable margin."""
+        pass
+
+    @abstractmethod
+    def get_holdings(self) -> List[Dict[str, Any]]:
+        """Fetch CNC / long-term holdings."""
+        pass
+
+    @abstractmethod
+    def get_positions(self) -> List[Dict[str, Any]]:
+        """Fetch open intraday and derivative positions."""
+        pass
+
+    @abstractmethod
+    def get_trades(self) -> List[Dict[str, Any]]:
+        """Fetch executed trades / fills for the day."""
+        pass
+
     @abstractmethod
     def fetch_historical_daily(
         self, instrument_key: str, days: int = 365

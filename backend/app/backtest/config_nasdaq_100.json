@@ -1,9 +1,9 @@
 {
   "db_url": "postgresql+psycopg://signaldesk_user:signaldesk123@localhost:5432/signaldesk",
   "markets": {
-    "SP500": {
-      "index_symbol_id": 559,
-      "benchmark_symbol_id": 559
+    "NASDAQ100": {
+      "index_symbol_id": 2978,
+      "benchmark_symbol_id": 2978
     }
   },
   "starting_capital": 1000000.0,
@@ -36,6 +36,6 @@
       0.5
     ]
   ],
-  "ticker_filter": [],
-  "ticker_filter_file":"C:/Work/SignalDesk/data/Fundamental_Filter_US_Stocks.csv"
+  "final_exit_ma": "SMA50",
+  "ticker_filter": []
 }

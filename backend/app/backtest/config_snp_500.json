@@ -1,9 +1,9 @@
 {
   "db_url": "postgresql+psycopg://signaldesk_user:signaldesk123@localhost:5432/signaldesk",
   "markets": {
-    "NSE_ALL": {
-      "exchange_id": 1,     
-      "benchmark_symbol_id": 2
+    "SP500": {
+      "index_symbol_id": 559,
+      "benchmark_symbol_id": 559
     }
   },
   "starting_capital": 1000000.0,
@@ -36,6 +36,5 @@
       0.5
     ]
   ],
-  "final_exit_ma": "SMA50",
   "ticker_filter": []
 }

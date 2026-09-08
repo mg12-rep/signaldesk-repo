@@ -20,6 +20,7 @@ from app.backtest.enhanced_minervini_backtest import (
     load_benchmark_from_db,
     load_universe_from_db,
 )
+from app.backtest.enhanced_minervini_config import load_config
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
@@ -65,7 +66,18 @@ def run_scanner_pipeline(
     market: str = Query("NSE"),
 ):
     # 1. Base config cloned from DEFAULT_CONFIG
-    cfg = dict(DEFAULT_CONFIG)
+    # cfg = dict(DEFAULT_CONFIG)
+    print("***************************")
+    print(universe)
+    print(mode)
+    print(custom_path)
+    print(market)
+    print("***************************")
+    cfg = load_config(mode, universe, market)
+    print("***************************")
+    print(cfg)
+    print("***************************")
+
     cfg["output_dir"] = "output"
 
     # 2. Map Universe / Market to corresponding target config IDs

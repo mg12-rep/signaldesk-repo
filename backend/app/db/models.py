@@ -194,6 +194,8 @@ class Order(Base):
         String(100), nullable=False
     )  # minervini_vcp, larry_connors, mean_reversion
     broker_order_id = Column(String(100), nullable=True, index=True)
+    # Ensure broker_order_id has unique=True
+    broker_order_id = Column(String(100), nullable=True, unique=True, index=True)
 
     side = Column(Enum(OrderSide, native_enum=False), nullable=False)
     order_type = Column(
@@ -224,6 +226,12 @@ class Order(Base):
 class Holding(Base):
     __tablename__ = "holdings"
 
+    __table_args__ = (
+        UniqueConstraint(
+            "symbol_id", "broker", "strategy", name="uq_holdings_symbol_broker_strategy"
+        ),
+    )
+
     id = Column(Integer, primary_key=True, index=True)
     symbol_id = Column(
         Integer,
@@ -245,6 +253,8 @@ class Holding(Base):
     market_value = Column(Float, nullable=False)
     pnl = Column(Float, nullable=False)
     pnl_pct = Column(Float, nullable=False)
+    initial_quantity = Column(Integer, nullable=False)
+    entry_date = Column(Date, nullable=False)
 
     updated_at = Column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False

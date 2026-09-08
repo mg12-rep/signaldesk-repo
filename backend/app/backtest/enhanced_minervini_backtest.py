@@ -932,7 +932,7 @@ def save_trade_log_by_year(trade_log, output_dir, market_label):
     print(f"  wrote {combined_path} ({len(df)} trades total)")
 
 
-def main(cfg):
+def run_main_backtest(cfg):
     os.makedirs(cfg["output_dir"], exist_ok=True)
     engine = get_db_engine(cfg["db_url"])
     start_date = cfg.get("start_date")
@@ -1008,4 +1008,4 @@ if __name__ == "__main__":
     if os.path.exists(args.config):
         with open(args.config) as f:
             cfg.update(json.load(f))
-    main(cfg)
+    run_main_backtest(cfg)

@@ -102,6 +102,9 @@ def resolve_ticker_filter(cfg):
             except Exception:
                 with open(file_path) as f:
                     tickers.update(line.strip().upper() for line in f if line.strip())
+    print("tickers*****************")
+    print(tickers)
+    print("*****************")
 
     return tickers if tickers else None
 

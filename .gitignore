@@ -14,6 +14,7 @@ output/
 *.csv
 *.log
 *.zip
+*.env
 
 # IDE & OS files
 .vscode/

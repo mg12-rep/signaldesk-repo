@@ -1,10 +1,10 @@
 """
 Minervini VCP - Holdings Exit Recommendation Scanner
 =======================================================
-Reads your current holdings and, using the EXACT SAME exit rules as the
-backtest engine (hard stop, trailing stop, staged profit targets, wider
-post-profit trail, final trend-exit MA), tells you today's recommended
-action for each position:
+Reads your current holdings from the `holdings` DB table (not CSV) and,
+using the EXACT SAME exit rules as the backtest engine (hard stop,
+trailing stop, staged profit targets, wider post-profit trail, final
+trend-exit MA), tells you today's recommended action for each position:
 
     SELL_FULL          - stop-loss (hard or trailing) or trend-exit MA
                           breached TODAY.
@@ -22,22 +22,33 @@ action for each position:
 This script imports its logic directly from enhanced_minervini_backtest.py
 (compute_indicators, add_rs_rank, trend_template_pass, load_universe_from_db,
 load_benchmark_from_db, etc.) so there is no drift between what the backtest
-simulates and what this reports. Price history is pulled live from the
-same PostgreSQL database as the backtest and buy-signal scripts (via
-"db_url" and "markets" in config.json), not from CSV files.
+simulates and what this reports. Both price history AND your holdings are
+now pulled from the same PostgreSQL database (via "db_url", "markets", and
+"strategy_label" in config.json) -- no CSV files involved.
 
-HOLDINGS FILE FORMAT (CSV), columns are case-insensitive:
-    Ticker, EntryDate, EntryPrice, Shares [, InitialShares]
+HOLDINGS SOURCE: the `holdings` table, filtered to
+WHERE strategy = cfg["strategy_label"] (default "minervini_vcp") so this
+script only ever evaluates Minervini-strategy positions, not Connors /
+mean_reversion positions that live in the same table under a different
+exit-rule engine. Optionally also filtered by cfg["broker"] if set.
 
-    Ticker,EntryDate,EntryPrice,Shares,InitialShares
-    AAPL,2026-05-12,195.40,50,100
-    MSFT,2026-06-01,410.20,30,30
-
-  - Shares = however many you currently hold (after any partial sales).
-  - InitialShares = your ORIGINAL position size when first entered. If
-    omitted, it's assumed equal to Shares (i.e. you haven't sold any yet)
-    -- get this right if you've already taken a partial profit, since it's
-    what a SELL_PARTIAL recommendation's share count is based on.
+REQUIRES two columns on `holdings` beyond what's already there:
+    entry_date        DATE      -- when the position was actually opened.
+                                    Without this, price-history replay
+                                    (which is how SELL_FULL_OVERDUE and
+                                    profit-target state get reconstructed)
+                                    has no starting point. `updated_at`
+                                    is NOT a substitute -- it changes on
+                                    every broker sync, not just at entry.
+    initial_quantity   INTEGER  -- the ORIGINAL position size at entry.
+                                    Falls back to `quantity` (treated as
+                                    "no partial sale yet") if NULL, but
+                                    get this right for positions you've
+                                    already partially sold, since it's
+                                    what a SELL_PARTIAL share count is
+                                    based on.
+Rows with a NULL entry_date are skipped with a loud warning rather than
+guessed at.
 
 IMPORTANT ASSUMPTION: this script reconstructs a position's state (highest
 close since entry, which profit targets have fired) purely by replaying
@@ -47,8 +58,9 @@ reconstructed state can drift from reality -- SELL_FULL_OVERDUE is exactly
 the signal that tells you to go check that.
 
 Run:
-    python manage_holdings.py --config config.json --holdings holdings.csv
-    (config.json needs "db_url" and "markets", same as the other two scripts)
+    python manage_holdings.py --config config.json
+    (config.json needs "db_url", "markets", and optionally "strategy_label"
+    / "broker"; same db_url as the other scripts)
 """
 
 import argparse
@@ -67,36 +79,58 @@ from app.backtest.enhanced_minervini_backtest import (
     load_universe_from_db,
     trend_template_pass,
 )
+from sqlalchemy import text
 
 
-def load_holdings(path):
-    df = pd.read_csv(path, encoding="utf-8-sig")
-    colmap = {}
-    for c in df.columns:
-        key = str(c).strip().lower()
-        if key == "ticker" or key == "symbol":
-            colmap[c] = "Ticker"
-        elif key == "entrydate" or key == "entry_date" or key == "date":
-            colmap[c] = "EntryDate"
-        elif key == "entryprice" or key == "entry_price" or key == "price":
-            colmap[c] = "EntryPrice"
-        elif key == "shares" or key == "qty" or key == "quantity":
-            colmap[c] = "Shares"
-        elif key == "initialshares" or key == "initial_shares":
-            colmap[c] = "InitialShares"
-    df = df.rename(columns=colmap)
+def load_holdings_from_db(engine, strategy_label, broker=None):
+    """
+    Loads open positions for a given strategy from the `holdings` table,
+    joined to `symbols` for the trading_symbol (to match load_universe_from_db's
+    keys). Rows with a NULL entry_date are dropped with a warning, since
+    evaluate_holding() cannot reconstruct position state without one.
+    """
+    broker_filter = ""
+    params = {"strategy_label": strategy_label}
+    if broker:
+        broker_filter = " AND h.broker = :broker"
+        params["broker"] = broker
 
-    needed = {"Ticker", "EntryDate", "EntryPrice", "Shares"}
-    missing = needed - set(df.columns)
-    if missing:
-        raise ValueError(f"holdings file missing columns: {missing}")
+    query = text(f"""
+        SELECT
+            h.id AS "HoldingId",
+            s.trading_symbol AS "Ticker",
+            h.entry_date AS "EntryDate",
+            h.avg_buy_price AS "EntryPrice",
+            h.quantity AS "Shares",
+            COALESCE(h.initial_quantity, h.quantity) AS "InitialShares",
+            h.broker AS "Broker",
+            h.currency AS "Currency"
+        FROM holdings h
+        JOIN symbols s ON h.symbol_id = s.id
+        WHERE h.strategy = :strategy_label
+        {broker_filter}
+        ORDER BY s.trading_symbol
+    """)
 
-    if "InitialShares" not in df.columns:
-        df["InitialShares"] = df["Shares"]
-    df["InitialShares"] = df["InitialShares"].fillna(df["Shares"])
+    with engine.connect() as conn:
+        df = pd.read_sql(query, conn, params=params)
+
+    if df.empty:
+        return df
+
+    missing_entry_date = df["EntryDate"].isna()
+    if missing_entry_date.any():
+        skipped = df.loc[missing_entry_date, ["Ticker", "Broker", "HoldingId"]]
+        print(
+            f"  [warn] {missing_entry_date.sum()} holding(s) skipped -- NULL entry_date "
+            f"(can't reconstruct position state without it):"
+        )
+        for _, r in skipped.iterrows():
+            print(f"      {r['Ticker']} ({r['Broker']}), holding id={r['HoldingId']}")
+        df = df[~missing_entry_date].reset_index(drop=True)
 
     df["Ticker"] = df["Ticker"].astype(str).str.strip().str.upper()
-    df["EntryDate"] = pd.to_datetime(df["EntryDate"], errors="coerce", dayfirst=False)
+    df["EntryDate"] = pd.to_datetime(df["EntryDate"], errors="coerce")
     df["EntryPrice"] = pd.to_numeric(df["EntryPrice"], errors="coerce")
     df["Shares"] = pd.to_numeric(df["Shares"], errors="coerce").astype(int)
     df["InitialShares"] = pd.to_numeric(df["InitialShares"], errors="coerce").astype(
@@ -262,11 +296,18 @@ def evaluate_holding(ticker, df, entry_date, entry_price, shares, initial_shares
     }
 
 
-def main(cfg, holdings_path):
-    holdings = load_holdings(holdings_path)
-    print(f"Loaded {len(holdings)} holdings from {holdings_path}")
-
+def main(cfg):
     engine = get_db_engine(cfg["db_url"])
+    strategy_label = cfg.get("strategy_label", "minervini_vcp")
+    broker = cfg.get("broker")
+
+    holdings = load_holdings_from_db(engine, strategy_label, broker=broker)
+    filt_desc = f"strategy={strategy_label}" + (f", broker={broker}" if broker else "")
+    print(f"Loaded {len(holdings)} holdings from DB ({filt_desc})")
+    if holdings.empty:
+        print("  nothing to evaluate, exiting.")
+        return
+
     start_date = cfg.get("start_date")
     end_date = cfg.get("end_date")
 
@@ -327,6 +368,8 @@ def main(cfg, holdings_path):
             int(h["InitialShares"]),
             cfg,
         )
+        result["broker"] = h.get("Broker")
+        result["holding_id"] = h.get("HoldingId")
         results.append(result)
 
     status_priority = {
@@ -370,14 +413,31 @@ def main(cfg, holdings_path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="config.json")
-    parser.add_argument("--holdings", type=str, default="holdings.csv")
+    parser.add_argument(
+        "--strategy",
+        type=str,
+        default=None,
+        help="overrides cfg['strategy_label'], e.g. minervini_vcp",
+    )
+    parser.add_argument(
+        "--broker",
+        type=str,
+        default=None,
+        help="optionally restrict to one broker, e.g. ZERODHA",
+    )
     args = parser.parse_args()
 
     cfg = dict(DEFAULT_CONFIG)
+    cfg["strategy_label"] = "minervini_vcp"
     if os.path.exists(args.config):
         with open(args.config) as f:
             cfg.update(json.load(f))
     else:
         print(f"[warn] {args.config} not found, using defaults only.")
 
-    main(cfg, args.holdings)
+    if args.strategy:
+        cfg["strategy_label"] = args.strategy
+    if args.broker:
+        cfg["broker"] = args.broker
+
+    main(cfg)
