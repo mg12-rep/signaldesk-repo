@@ -2,18 +2,15 @@
 
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
-import {
-  Sliders,
-  Layers,
-  FileSpreadsheet,
-  Play,
-  Globe2,
-  CheckCircle2,
-  Radio,
-} from "lucide-react";
+import { Sliders, Layers, FileSpreadsheet, Play } from "lucide-react";
 
 type ScanMode = "UNIVERSE" | "CUSTOM_FILE";
-type PredefinedUniverse = "NSE_500" | "NSE_ALL" | "SP_500" | "NASDAQ_100";
+type PredefinedUniverse =
+  | "NSE_500"
+  | "NSE_ALL"
+  | "SP_500"
+  | "NASDAQ_100"
+  | "US_ETFS";
 type MarketType = "NSE" | "US";
 
 export default function ScannerConfigPage() {
@@ -30,6 +27,15 @@ export default function ScannerConfigPage() {
   const [customFileMarket, setCustomFileMarket] = useState<MarketType>("NSE");
   const [isRunning, setIsRunning] = useState(false);
 
+  // Auto-switch universe when selecting Weinstein ETF model
+  const handleStrategyChange = (newStrategy: string) => {
+    setStrategyModel(newStrategy);
+    if (newStrategy === "weinstein_etf") {
+      setScanMode("UNIVERSE");
+      setSelectedUniverse("US_ETFS");
+    }
+  };
+
   const handleLaunchScan = () => {
     setIsRunning(true);
 
@@ -41,7 +47,6 @@ export default function ScannerConfigPage() {
         : { custom_path: customFilePath, market: customFileMarket }),
     });
 
-    // Navigate to Results page with configuration params
     router.push(`/results?${queryParams.toString()}`);
   };
 
@@ -69,11 +74,14 @@ export default function ScannerConfigPage() {
           </label>
           <select
             value={strategyModel}
-            onChange={(e) => setStrategyModel(e.target.value)}
+            onChange={(e) => handleStrategyChange(e.target.value)}
             className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3.5 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-emerald-500 transition"
           >
             <option value="minervini_vcp">
               Minervini Stage-2 VCP Breakout
+            </option>
+            <option value="weinstein_etf">
+              Stan Weinstein US ETF Stage Screener
             </option>
             <option value="high_tight_flag">High Tight Flag (HTF)</option>
             <option value="relative_strength_leaders">
@@ -105,12 +113,13 @@ export default function ScannerConfigPage() {
             </span>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-1">
             {[
               { id: "NSE_500", label: "NSE 500" },
               { id: "NSE_ALL", label: "NSE (All Stocks)" },
               { id: "SP_500", label: "S&P 500" },
               { id: "NASDAQ_100", label: "NASDAQ 100" },
+              { id: "US_ETFS", label: "US ETFs" },
             ].map((u) => {
               const isSelected =
                 scanMode === "UNIVERSE" && selectedUniverse === u.id;
@@ -159,7 +168,6 @@ export default function ScannerConfigPage() {
           </div>
 
           <div className="space-y-3 pt-1">
-            {/* Custom Market Selection (NSE or US) */}
             <div className="flex items-center gap-3">
               <span className="text-xs text-slate-400">
                 File Market Universe:
@@ -187,7 +195,6 @@ export default function ScannerConfigPage() {
               </div>
             </div>
 
-            {/* Custom Path Input */}
             <input
               type="text"
               disabled={scanMode !== "CUSTOM_FILE"}

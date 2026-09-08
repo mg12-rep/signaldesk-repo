@@ -5,11 +5,11 @@ import Link from "next/link";
 import {
   TrendingUp,
   Activity,
-  ShieldCheck,
   RefreshCw,
   Database,
   Wallet,
   AlertTriangle,
+  Layers,
 } from "lucide-react";
 
 interface AccountBalance {
@@ -44,8 +44,9 @@ interface DashboardSummary {
 export default function DashboardPage() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [syncingMarket, setSyncingMarket] = useState<"NSE" | "US" | null>(null);
+  const [syncingMarket, setSyncingMarket] = useState<
+    "NSE" | "US" | "US_ETFS" | null
+  >(null);
 
   const fetchDashboardData = async () => {
     setLoading(true);
@@ -66,16 +67,21 @@ export default function DashboardPage() {
     fetchDashboardData();
   }, []);
 
-  const triggerSync = async (market: "US" | "NSE") => {
+  const triggerSync = async (market: "US" | "NSE" | "US_ETFS") => {
     setSyncingMarket(market);
     try {
-      await fetch(`http://localhost:8000/api/v1/sync/${market.toLowerCase()}`, {
+      const endpoint =
+        market === "US_ETFS"
+          ? "http://localhost:8000/api/v1/sync/us-etfs"
+          : `http://localhost:8000/api/v1/sync/${market.toLowerCase()}`;
+
+      await fetch(endpoint, {
         method: "POST",
       });
     } catch (e) {
       console.error("Sync failed", e);
     } finally {
-      setTimeout(() => setSyncingMarket(null), 1200);
+      setTimeout(() => setSyncingMarket(null), 1500);
     }
   };
 
@@ -126,6 +132,20 @@ export default function DashboardPage() {
             />
             <span>
               {syncingMarket === "US" ? "Syncing US..." : "Sync US (IBKR)"}
+            </span>
+          </button>
+
+          {/* Sync US ETFs Button */}
+          <button
+            onClick={() => triggerSync("US_ETFS")}
+            disabled={syncingMarket !== null}
+            className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 px-3 py-1.5 rounded-md text-xs font-medium transition disabled:opacity-50"
+          >
+            <Layers
+              className={`h-3.5 w-3.5 text-purple-400 ${syncingMarket === "US_ETFS" ? "animate-spin" : ""}`}
+            />
+            <span>
+              {syncingMarket === "US_ETFS" ? "Syncing ETFs..." : "Sync ETFs"}
             </span>
           </button>
         </div>

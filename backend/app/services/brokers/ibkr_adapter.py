@@ -255,5 +255,63 @@ class IBKRAdapter(BaseBrokerAdapter):
             logger.error(f"Error fetching IBKR historical bars for {symbol}: {e}")
             return pd.DataFrame()
 
+    def fetch_multiple_etf_bars(
+        self, items: List[Dict[str, Any]], delay_seconds: float = 1.1
+    ) -> Dict[str, pd.DataFrame]:
+        """
+        Connects once to IBKR, iterates through items [{'symbol': 'SPY', 'duration': '5 D'}],
+        and returns {symbol: df_bars}.
+        """
+
+        def _batch(ib: IB) -> Dict[str, pd.DataFrame]:
+            results = {}
+            for idx, item in enumerate(items, start=1):
+                sym = item["symbol"].upper().strip()
+                duration = item.get("duration", "5 D")
+                try:
+                    contract = Stock(sym, "SMART", "USD")
+                    if not ib.qualifyContracts(contract):
+                        logger.warning(
+                            f"[{idx}/{len(items)}] Could not qualify contract for {sym}"
+                        )
+                        continue
+
+                    bars = ib.reqHistoricalData(
+                        contract,
+                        endDateTime="",
+                        durationStr=duration,
+                        barSizeSetting="1 day",
+                        whatToShow="ADJUSTED_LAST",
+                        useRTH=True,
+                        formatDate=1,
+                    )
+                    if bars:
+                        df = pd.DataFrame(
+                            [
+                                {
+                                    "date": pd.to_datetime(b.date).date(),
+                                    "open": float(b.open),
+                                    "high": float(b.high),
+                                    "low": float(b.low),
+                                    "close": float(b.close),
+                                    "adj_close": float(b.close),
+                                    "volume": int(b.volume),
+                                }
+                                for b in bars
+                            ]
+                        )
+                        results[sym] = df
+                    ib.sleep(delay_seconds)
+                except Exception as e:
+                    logger.error(f"Error fetching historical bars for {sym}: {e}")
+                    ib.sleep(delay_seconds)
+            return results
+
+        try:
+            return self._run_in_clean_thread(_batch)
+        except Exception as err:
+            logger.error(f"Failed batch historical data fetch: {err}")
+            return {}
+
 
 ibkr_adapter = IBKRAdapter()

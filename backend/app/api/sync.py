@@ -1,9 +1,13 @@
 import logging
 
+from app.db.session import get_db
 from app.services.ingest_data import run_eod_pipeline
 from app.services.seed_nse_data import get_all_active_symbols, run_full_universe_sync
-from app.services.seed_us_data import seed_us_universe_from_db
-from fastapi import APIRouter, BackgroundTasks
+from app.services.seed_us_data import seed_us_universe_from_db, sync_us_etf_market_data
+from fastapi import APIRouter, BackgroundTasks, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+
+router = APIRouter(prefix="/sync", tags=["sync"])
 
 logger = logging.getLogger("sync_router")
 router = APIRouter()
@@ -12,6 +16,11 @@ router = APIRouter()
 def background_us_sync():
     logger.info("🚀 [IBKR SYNC] Connecting to local TWS session...")
     try:
+        logger.info(
+            "✅ [IBKR SYNC] Now Syncing US ETFs from data/US_ETF_Tickers.csv..."
+        )
+        sync_us_etf_market_data()
+        logger.info("✅ [IBKR SYNC] US ETF data sync complete.")
         seed_us_universe_from_db()
         logger.info("✅ [IBKR SYNC] US & Global universe data sync complete.")
     except Exception as e:
@@ -35,6 +44,12 @@ def trigger_nse_sync(background_tasks: BackgroundTasks):
         "status": "SUCCESS",
         "message": f"Full NSE Universe sync started in background for {len(symbols)} symbols.",
     }
+
+
+@router.post("/us-etfs")
+async def sync_us_etfs_endpoint(db: AsyncSession = Depends(get_db)):
+    result = await sync_us_etf_market_data(db)
+    return {"status": "success", "result": result}
 
 
 def background_nse_sync(universe: list[str]):

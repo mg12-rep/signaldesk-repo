@@ -8,8 +8,6 @@ from app.backtest.enhanced_generate_buy_signals import (
     scan_ticker,
     suggest_position_size,
 )
-
-# Import directly from your existing engine modules
 from app.backtest.enhanced_minervini_backtest import (
     DEFAULT_CONFIG,
     add_rs_rank,
@@ -21,6 +19,7 @@ from app.backtest.enhanced_minervini_backtest import (
     load_universe_from_db,
 )
 from app.backtest.enhanced_minervini_config import load_config
+from app.screeners.weinstein_screener import run_weinstein_etf_screener
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
@@ -43,6 +42,7 @@ class SignalItem(BaseModel):
     volume_needed: Optional[int] = None
     pct_from_trigger: Optional[float] = None
     base_age_days: Optional[int] = None
+    stage: Optional[str] = None
 
 
 class ScannerRunResponse(BaseModel):
@@ -65,22 +65,54 @@ def run_scanner_pipeline(
     custom_path: Optional[str] = Query(None),
     market: str = Query("NSE"),
 ):
-    # 1. Base config cloned from DEFAULT_CONFIG
-    # cfg = dict(DEFAULT_CONFIG)
-    print("***************************")
-    print(universe)
-    print(mode)
-    print(custom_path)
-    print(market)
-    print("***************************")
-    cfg = load_config(mode, universe, market)
-    print("***************************")
-    print(cfg)
-    print("***************************")
+    # -------------------------------------------------------------
+    # Stan Weinstein US ETF Screener Dispatch
+    # -------------------------------------------------------------
+    if strategy == "weinstein_etf":
+        raw_candidates = run_weinstein_etf_screener()
 
+        stage2_buys: List[SignalItem] = []
+        stage1_watchlist: List[SignalItem] = []
+
+        for item in raw_candidates:
+            stage_tag = item.get("stage", "STAGE_2_CONTINUATION")
+            sig = SignalItem(
+                status="BUY_TODAY"
+                if stage_tag == "STAGE_2_CONTINUATION"
+                else "WATCHLIST",
+                ticker=item["symbol"],
+                date=pd.Timestamp.today().strftime("%Y-%m-%d"),
+                trigger_price=item.get("resistance", item["close"]),
+                close=item["close"],
+                volume=item.get("volume", 0),
+                rs_rank=item.get("mrs"),  # Map Mansfield RS here
+                swing_high=item.get("resistance"),
+                pct_from_trigger=item.get("distance_sma_pct"),
+                stage=stage_tag,
+            )
+            if stage_tag == "STAGE_2_CONTINUATION":
+                stage2_buys.append(sig)
+            else:
+                stage1_watchlist.append(sig)
+
+        return ScannerRunResponse(
+            strategy="weinstein_etf",
+            mode="UNIVERSE",
+            market_label="US_ETFS",
+            market_status="ACTIVE",
+            total_universe_count=296,
+            scanned_count=len(raw_candidates),
+            buy_today=stage2_buys,
+            near_buys=[],
+            watchlist=stage1_watchlist,
+        )
+
+    # -------------------------------------------------------------
+    # Standard Minervini / VCP Pipeline
+    # -------------------------------------------------------------
+    cfg = load_config(mode, universe, market)
     cfg["output_dir"] = "output"
 
-    # 2. Map Universe / Market to corresponding target config IDs
     if mode == "CUSTOM_FILE":
         if not custom_path or not os.path.exists(custom_path):
             raise HTTPException(
@@ -99,7 +131,7 @@ def run_scanner_pipeline(
                 market_label: {"exchange_id": 1, "benchmark_symbol_id": 2}
             }
 
-    else:  # mode == "UNIVERSE"
+    else:
         cfg["ticker_filter_file"] = None
         if universe == "NSE_500":
             market_label = "NIFTY500"
@@ -121,19 +153,22 @@ def run_scanner_pipeline(
             cfg["markets"] = {
                 market_label: {"index_symbol_id": 2978, "benchmark_symbol_id": 2978}
             }
+        elif universe == "US_ETFS":
+            market_label = "US_ETFS"
+            cfg["markets"] = {
+                market_label: {"exchange_id": 12, "benchmark_symbol_id": 5201}
+            }
         else:
             raise HTTPException(
                 status_code=400, detail=f"Unknown target universe: {universe}"
             )
 
-    # 3. Resolve Database Engine
     engine = get_db_engine(cfg["db_url"])
     m_cfg = cfg["markets"][market_label]
     index_symbol_id = m_cfg.get("index_symbol_id")
     exchange_id = m_cfg.get("exchange_id")
     benchmark_symbol_id = m_cfg.get("benchmark_symbol_id", index_symbol_id or 1)
 
-    # 4. Load Universe from Database
     universe_data = load_universe_from_db(
         engine,
         index_symbol_id=index_symbol_id,
@@ -157,7 +192,6 @@ def run_scanner_pipeline(
 
     total_universe_count = len(universe_data)
 
-    # 5. Load Benchmark and compute Market Health / RS baseline
     index_return_series = None
     market_health = None
     idx_df = load_benchmark_from_db(
@@ -170,20 +204,17 @@ def run_scanner_pipeline(
         index_return_series = compute_index_weighted_return(idx_df)
         market_health = compute_market_health(idx_df, cfg)
 
-    # 6. Compute Indicators & Relative Strength Percentile Ranks
     for t, df in universe_data.items():
         universe_data[t] = compute_indicators(
             df, index_return_series=index_return_series
         )
     add_rs_rank(universe_data)
 
-    # 7. Apply Liquidity Filter (50-day average volume)
     for t in list(universe_data.keys()):
         avgvol = universe_data[t]["AvgVol50"].mean()
         if pd.isna(avgvol) or avgvol < cfg["min_avg_volume"]:
             del universe_data[t]
 
-    # 8. Apply Shortlist / Ticker Filter (Computed after RS Ranking)
     ticker_filter = resolve_ticker_filter(cfg)
     if ticker_filter:
         universe_data = {
@@ -203,7 +234,6 @@ def run_scanner_pipeline(
             watchlist=[],
         )
 
-    # 9. Determine Market Regime Health
     today = max(df["Date"].iloc[-1] for df in universe_data.values())
     market_ok = True
     if market_health is not None:
@@ -212,7 +242,6 @@ def run_scanner_pipeline(
         except Exception:
             market_ok = bool(market_health.iloc[-1])
 
-    # 10. Run VCP Signal Scan
     buys, near_buys, watchlist = [], [], []
     for t, df in universe_data.items():
         result = scan_ticker(t, df.reset_index(drop=True), cfg)
@@ -242,14 +271,11 @@ def run_scanner_pipeline(
         elif result["status"] == "WATCHLIST":
             watchlist.append(result)
 
-    # Sort results
     buys.sort(key=lambda x: x.get("rs_rank") or 0, reverse=True)
     near_buys.sort(key=lambda x: x.get("rs_rank") or 0, reverse=True)
     watchlist.sort(key=lambda x: x.get("pct_from_trigger") or 999)
 
-    # Normalize keys for Pydantic serialization
     def normalize_signal(item: dict) -> SignalItem:
-        # Map current_close to close if present
         if "close" not in item and "current_close" in item:
             item["close"] = item["current_close"]
         if "volume" not in item:

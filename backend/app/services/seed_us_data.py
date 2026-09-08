@@ -2,12 +2,15 @@ import asyncio
 import logging
 import os
 from datetime import date, datetime, timedelta
-from typing import Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
+from app.services.brokers.ibkr_adapter import ibkr_adapter
 from dotenv import load_dotenv
 from ib_insync import IB, Index, Stock, util
 from sqlalchemy import create_engine, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 load_dotenv()
 logger = logging.getLogger("seed_us_universe")
@@ -277,5 +280,153 @@ def seed_us_universe_from_db(
     )
 
 
+async def sync_us_etf_market_data(
+    db: AsyncSession,
+    csv_path: str = "C:/Work/signaldesk/data/US_ETF_Tickers.csv",
+    delay_between_calls: float = 1.1,
+) -> Dict[str, Any]:
+    file_path = Path(csv_path)
+    if not file_path.exists():
+        raise FileNotFoundError(f"Ticker file {csv_path} not found.")
+
+    df_tickers = pd.read_csv(file_path)
+    tickers = df_tickers["ticker"].dropna().str.strip().unique().tolist()
+
+    today = datetime.now().date()
+    cutoff_date = today - timedelta(days=365)
+
+    # Phase 1: Inspect DB status for each ticker & build request queue
+    batch_queue: List[Dict[str, Any]] = []
+    symbol_meta: Dict[str, Dict[str, Any]] = {}
+    skipped_count = 0
+
+    for ticker in tickers:
+        sym = ticker.upper()
+
+        # Resolve or create symbol record
+        res = await db.execute(
+            text("SELECT id FROM symbols WHERE UPPER(trading_symbol) = :sym LIMIT 1;"),
+            {"sym": sym},
+        )
+        row = res.mappings().first()
+        if row:
+            symbol_id = row["id"]
+            await db.execute(
+                text(
+                    "UPDATE symbols SET asset_class = 'ETF', is_active = TRUE WHERE id = :id;"
+                ),
+                {"id": symbol_id},
+            )
+        else:
+            ins = await db.execute(
+                text("""
+                    INSERT INTO symbols (trading_symbol, name, exchange_id, is_index, asset_class, is_active)
+                    VALUES (:sym, :name, 12, FALSE, 'ETF', TRUE)
+                    RETURNING id;
+                """),
+                {"sym": sym, "name": f"{sym} ETF"},
+            )
+            symbol_id = ins.scalar()
+
+        # Check existing date in DB
+        date_res = await db.execute(
+            text(
+                "SELECT MAX(date) AS max_date FROM market_data_all WHERE symbol_id = :sid;"
+            ),
+            {"sid": symbol_id},
+        )
+        last_date = date_res.scalar()
+
+        if last_date is None:
+            duration_str = "2 Y"
+        else:
+            days_missing = (today - last_date).days
+            if days_missing <= 0:
+                skipped_count += 1
+                continue
+            buffer_days = max(days_missing + 2, 5)
+            duration_str = f"{buffer_days} D"
+
+        batch_queue.append({"symbol": sym, "duration": duration_str})
+        symbol_meta[sym] = {"symbol_id": symbol_id, "last_date": last_date}
+
+    await db.commit()
+
+    if not batch_queue:
+        return {
+            "total_tickers": len(tickers),
+            "synced": 0,
+            "skipped": skipped_count,
+            "failed": [],
+        }
+
+    logger.info(f"Queued {len(batch_queue)} ETF(s) for single-session batch sync...")
+
+    # Phase 2: Single IBKR connection call
+    fetched_data = ibkr_adapter.fetch_multiple_etf_bars(
+        batch_queue, delay_seconds=delay_between_calls
+    )
+
+    # Phase 3: Persist fetched results
+    synced_count = 0
+    failed_tickers = [
+        item["symbol"] for item in batch_queue if item["symbol"] not in fetched_data
+    ]
+
+    upsert_stmt = """
+        INSERT INTO {table} (symbol_id, date, open, high, low, close, adj_close, volume)
+        VALUES (:symbol_id, :date, :open, :high, :low, :close, :adj_close, :volume)
+        ON CONFLICT (symbol_id, date) DO UPDATE SET
+            open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+            close = EXCLUDED.close, adj_close = EXCLUDED.adj_close, volume = EXCLUDED.volume;
+    """
+
+    for sym, bars_df in fetched_data.items():
+        if bars_df.empty:
+            failed_tickers.append(sym)
+            continue
+
+        meta = symbol_meta.get(sym, {})
+        last_date = meta.get("last_date")
+        symbol_id = meta.get("symbol_id")
+
+        if last_date is not None:
+            bars_df = bars_df[bars_df["date"] >= last_date]
+            if bars_df.empty:
+                skipped_count += 1
+                continue
+
+        bars_df["symbol_id"] = symbol_id
+        eod_df = bars_df[bars_df["date"] >= cutoff_date]
+        hist_df = bars_df[bars_df["date"] < cutoff_date]
+
+        if not eod_df.empty:
+            for record in eod_df.to_dict(orient="records"):
+                await db.execute(
+                    text(upsert_stmt.format(table="market_data_eod")), record
+                )
+
+        if not hist_df.empty:
+            for record in hist_df.to_dict(orient="records"):
+                await db.execute(
+                    text(upsert_stmt.format(table="market_data_history")), record
+                )
+
+        synced_count += 1
+
+    await db.commit()
+    logger.info(
+        f"Batch completed: Synced={synced_count}, Skipped={skipped_count}, Failed={len(failed_tickers)}"
+    )
+
+    return {
+        "total_tickers": len(tickers),
+        "synced": synced_count,
+        "skipped": skipped_count,
+        "failed": failed_tickers,
+    }
+
+
 if __name__ == "__main__":
     seed_us_universe_from_db(max_symbols=None)
+    sync_us_etf_market_data()
