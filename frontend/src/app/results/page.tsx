@@ -18,6 +18,8 @@ interface SignalItem {
   ticker: string;
   date: string;
   trigger_price: number;
+  trailing_stop?: number;
+  atr14?: number;
   close: number;
   volume: number;
   rs_rank?: number;
@@ -195,20 +197,20 @@ function ResultsContent() {
         {/* Table View */}
         <div className="lg:col-span-2 bg-slate-900 border border-slate-800/80 rounded-xl overflow-hidden shadow-xl">
           <div className="overflow-x-auto">
+            {/* Replace the <table> inside page.tsx with this updated structure */}
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="border-b border-slate-800 text-[11px] font-semibold text-slate-400 uppercase tracking-wider bg-slate-950/40">
                   <th className="py-3 px-4">Ticker</th>
                   <th className="py-3 px-3">Close</th>
-                  <th className="py-3 px-3">Trigger Price</th>
-                  <th className="py-3 px-3">RS Rank</th>
-                  <th className="py-3 px-3">
-                    {activeTab === "WATCHLIST"
-                      ? "Distance %"
-                      : activeTab === "NEAR_BUYS"
-                        ? "Vol Req"
-                        : "Stop Loss"}
+                  <th className="py-3 px-3">Trigger / Base</th>
+                  <th className="py-3 px-3">MRS Rank</th>
+                  <th className="py-3 px-3">Dist SMA %</th>
+                  <th className="py-3 px-3 text-rose-400">Hard Stop (8%)</th>
+                  <th className="py-3 px-3 text-amber-400">
+                    Trailing SL (2×ATR)
                   </th>
+                  <th className="py-3 px-3 text-slate-400">ATR(14W)</th>
                   <th className="py-3 px-3 text-right">Status</th>
                 </tr>
               </thead>
@@ -216,19 +218,19 @@ function ResultsContent() {
                 {loading ? (
                   <tr>
                     <td
-                      colSpan={6}
+                      colSpan={9}
                       className="py-12 text-center text-slate-500 font-mono"
                     >
-                      Running enhanced Minervini VCP scan against database...
+                      Scanning ETF universe...
                     </td>
                   </tr>
                 ) : currentList.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={6}
+                      colSpan={9}
                       className="py-12 text-center text-slate-500 font-mono"
                     >
-                      No setups in this category for current criteria.
+                      No setups in this category.
                     </td>
                   </tr>
                 ) : (
@@ -238,35 +240,57 @@ function ResultsContent() {
                       <tr
                         key={item.ticker}
                         onClick={() => setSelectedSignal(item)}
-                        className={`hover:bg-slate-800/40 cursor-pointer transition ${isSelected ? "bg-slate-800/60" : ""}`}
+                        className={`hover:bg-slate-800/40 cursor-pointer transition ${
+                          isSelected ? "bg-slate-800/60" : ""
+                        }`}
                       >
                         <td className="py-3 px-4 font-bold text-white font-mono">
                           {item.ticker}
                         </td>
                         <td className="py-3 px-3 font-mono text-slate-200">
-                          {item.close.toFixed(2)}
+                          ${item.close.toFixed(2)}
                         </td>
                         <td className="py-3 px-3 font-mono text-emerald-400 font-semibold">
-                          {item.trigger_price.toFixed(2)}
+                          ${item.trigger_price.toFixed(2)}
                         </td>
-                        <td className="py-3 px-3 font-mono text-purple-300">
-                          {item.rs_rank ? item.rs_rank.toFixed(1) : "—"}
+                        <td
+                          className={`py-3 px-3 font-mono font-semibold ${
+                            (item.rs_rank ?? 0) >= 0
+                              ? "text-purple-300"
+                              : "text-amber-400"
+                          }`}
+                        >
+                          {item.rs_rank !== undefined && item.rs_rank !== null
+                            ? item.rs_rank.toFixed(1)
+                            : "—"}
                         </td>
-                        <td className="py-3 px-3 font-mono text-slate-300">
-                          {activeTab === "WATCHLIST"
-                            ? `${item.pct_from_trigger?.toFixed(1)}%`
-                            : activeTab === "NEAR_BUYS"
-                              ? `${item.volume_needed?.toLocaleString()}`
-                              : `${item.hard_stop?.toFixed(2)}`}
+                        <td className="py-3 px-3 font-mono text-slate-400">
+                          +
+                          {item.pct_from_trigger
+                            ? item.pct_from_trigger.toFixed(1)
+                            : "0.0"}
+                          %
+                        </td>
+                        <td className="py-3 px-3 font-mono text-rose-400 font-semibold">
+                          $
+                          {item.hard_stop
+                            ? item.hard_stop.toFixed(2)
+                            : (item.close * 0.92).toFixed(2)}
+                        </td>
+                        <td className="py-3 px-3 font-mono text-amber-400 font-semibold">
+                          {item.trailing_stop
+                            ? `$${item.trailing_stop.toFixed(2)}`
+                            : "—"}
+                        </td>
+                        <td className="py-3 px-3 font-mono text-slate-400">
+                          {item.atr14 ? `$${item.atr14.toFixed(2)}` : "—"}
                         </td>
                         <td className="py-3 px-3 text-right">
                           <span
                             className={`text-[10px] px-2 py-0.5 rounded font-bold ${
                               item.status === "BUY_TODAY"
                                 ? "bg-emerald-950 text-emerald-400 border border-emerald-800"
-                                : item.status === "NEAR_BUY_VOLUME_PENDING"
-                                  ? "bg-amber-950 text-amber-400 border border-amber-800"
-                                  : "bg-blue-950 text-blue-400 border border-blue-800"
+                                : "bg-blue-950 text-blue-400 border border-blue-800"
                             }`}
                           >
                             {item.status}
@@ -294,23 +318,47 @@ function ResultsContent() {
 
           {selectedSignal ? (
             <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-3 text-xs">
-                <div className="bg-slate-950 p-2.5 rounded border border-slate-800">
-                  <span className="text-slate-500 text-[10px] block">
-                    Trigger Price
-                  </span>
-                  <span className="font-mono text-white font-bold">
-                    {selectedSignal.trigger_price}
+              {/* Trigger Price Card */}
+              <div className="bg-slate-950 p-2.5 rounded border border-slate-800">
+                <span className="text-slate-500 text-[10px] block">
+                  Trigger Price
+                </span>
+                <span className="font-mono text-white font-bold text-sm">
+                  ${selectedSignal.trigger_price.toFixed(2)}
+                </span>
+              </div>
+
+              {/* Stop Loss Cards: Hard Stop vs 2xATR Trailing Stop */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-slate-950/70 p-3 rounded-lg border border-slate-800">
+                  <div className="text-[10px] text-slate-400 uppercase tracking-wider">
+                    Hard Stop (8%)
+                  </div>
+                  <span className="font-mono text-rose-400 font-bold text-sm">
+                    $
+                    {selectedSignal.hard_stop !== undefined &&
+                    selectedSignal.hard_stop !== null
+                      ? selectedSignal.hard_stop.toFixed(2)
+                      : (selectedSignal.trigger_price * 0.92).toFixed(2)}
                   </span>
                 </div>
-                <div className="bg-slate-950 p-2.5 rounded border border-slate-800">
-                  <span className="text-slate-500 text-[10px] block">
-                    Hard Stop (8%)
+
+                <div className="bg-slate-950/70 p-3 rounded-lg border border-slate-800">
+                  <div className="text-[10px] text-slate-400 uppercase tracking-wider">
+                    Trailing Stop (2×ATR)
+                  </div>
+                  <span className="font-mono text-amber-400 font-bold text-sm">
+                    {selectedSignal.trailing_stop !== undefined &&
+                    selectedSignal.trailing_stop !== null
+                      ? `$${selectedSignal.trailing_stop.toFixed(2)}`
+                      : "N/A"}
                   </span>
-                  <span className="font-mono text-rose-400 font-bold">
-                    {selectedSignal.hard_stop ||
-                      (selectedSignal.trigger_price * 0.92).toFixed(2)}
-                  </span>
+                  {selectedSignal.atr14 !== undefined &&
+                    selectedSignal.atr14 !== null && (
+                      <div className="text-[9px] text-slate-500 font-mono mt-0.5">
+                        ATR: ${selectedSignal.atr14.toFixed(2)}
+                      </div>
+                    )}
                 </div>
               </div>
 

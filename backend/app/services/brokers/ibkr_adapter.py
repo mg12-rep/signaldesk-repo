@@ -256,26 +256,42 @@ class IBKRAdapter(BaseBrokerAdapter):
             return pd.DataFrame()
 
     def fetch_multiple_etf_bars(
-        self, items: List[Dict[str, Any]], delay_seconds: float = 1.1
+        self, items: List[Dict[str, Any]], delay_seconds: float = 1.2
     ) -> Dict[str, pd.DataFrame]:
         """
-        Connects once to IBKR, iterates through items [{'symbol': 'SPY', 'duration': '5 D'}],
-        and returns {symbol: df_bars}.
+        Connects once, requests historical bars with explicit per-contract timeouts,
+        and gracefully handles IBKR pacing / timeouts without freezing.
         """
 
         def _batch(ib: IB) -> Dict[str, pd.DataFrame]:
             results = {}
+
+            # Catch errors like 162 (Pacing violation) or 200 (No security definition)
+            def on_error(req_id, error_code, error_string, contract):
+                if error_code == 162:
+                    logger.warning(
+                        f"⚠️ IBKR Pacing Violation (Code 162): {error_string}"
+                    )
+                elif error_code in (200, 321):
+                    logger.warning(
+                        f"⚠️ IBKR Contract Error ({error_code}): {error_string}"
+                    )
+
+            ib.errorEvent += on_error
+
             for idx, item in enumerate(items, start=1):
                 sym = item["symbol"].upper().strip()
-                duration = item.get("duration", "5 D")
+                duration = item.get("duration", "2 Y")
+                logger.info(f"[{idx}/{len(items)}] Requesting {sym} ({duration})...")
+
                 try:
                     contract = Stock(sym, "SMART", "USD")
-                    if not ib.qualifyContracts(contract):
-                        logger.warning(
-                            f"[{idx}/{len(items)}] Could not qualify contract for {sym}"
-                        )
+                    qualified = ib.qualifyContracts(contract)
+                    if not qualified:
+                        logger.warning(f"Could not qualify {sym}, skipping.")
                         continue
 
+                    # Request with explicit duration
                     bars = ib.reqHistoricalData(
                         contract,
                         endDateTime="",
@@ -284,7 +300,9 @@ class IBKRAdapter(BaseBrokerAdapter):
                         whatToShow="ADJUSTED_LAST",
                         useRTH=True,
                         formatDate=1,
+                        timeout=12,  # Prevents hanging if IBKR drops or fails to return endDateTime
                     )
+
                     if bars:
                         df = pd.DataFrame(
                             [
@@ -301,10 +319,24 @@ class IBKRAdapter(BaseBrokerAdapter):
                             ]
                         )
                         results[sym] = df
-                    ib.sleep(delay_seconds)
+                        logger.info(
+                            f"[{idx}/{len(items)}] ✅ Received {len(df)} bars for {sym}"
+                        )
+                    else:
+                        logger.warning(
+                            f"[{idx}/{len(items)}] Empty bars returned for {sym}"
+                        )
+
                 except Exception as e:
-                    logger.error(f"Error fetching historical bars for {sym}: {e}")
-                    ib.sleep(delay_seconds)
+                    logger.error(f"[{idx}/{len(items)}] Error fetching {sym}: {e}")
+
+                # Rate limit pacing
+                # For first-time seeding with "2 Y", 2.0s gives IBKR breathing room
+                sleep_time = (
+                    delay_seconds if duration != "2 Y" else max(delay_seconds, 2.0)
+                )
+                ib.sleep(sleep_time)
+
             return results
 
         try:

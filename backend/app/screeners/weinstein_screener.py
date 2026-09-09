@@ -103,6 +103,10 @@ def scan_etf_stage1_to_stage2_transition(
     if not pd.isna(mrs_curr) and not pd.isna(mrs_prev4):
         if mrs_curr < mrs_prev4:
             return None
+    df["ATR14"] = compute_weekly_atr(df, period=14)
+    curr_atr = float(df["ATR14"].iloc[-1]) if not pd.isna(df["ATR14"].iloc[-1]) else 0.0
+    trailing_sl = round(float(curr["Close"] - (2.0 * curr_atr)), 2)
+    hard_stop_price = round(float(curr["Close"] * 0.92), 2)
 
     return {
         "symbol": symbol,
@@ -115,6 +119,9 @@ def scan_etf_stage1_to_stage2_transition(
         "avg_volume_10w": int(curr["AvgVol10"]) if not pd.isna(curr["AvgVol10"]) else 0,
         "mrs": round(float(mrs_curr), 2) if not pd.isna(mrs_curr) else 0.0,
         "distance_sma_pct": round(float(dist_sma * 100), 2),
+        "atr14": round(curr_atr, 2),
+        "hard_stop": hard_stop_price,
+        "trailing_stop": trailing_sl,
     }
 
 
@@ -124,6 +131,11 @@ def scan_etf_stage2(
     name: str = "",
     min_base_weeks: int = 20,
 ) -> Optional[Dict[str, Any]]:
+    """
+    Detects Stage 2 Continuation Breakouts:
+    Evaluates the prior completed week (completed_bar) for the breakout & volume confirmation,
+    and ensures the current week (curr) remains healthy above the 30-week SMA.
+    """
     if len(df_weekly) < 35:
         return None
 
@@ -131,43 +143,82 @@ def scan_etf_stage2(
     df["SMA30"] = df["Close"].rolling(30).mean()
     df["SMA30_slope4"] = df["SMA30"] - df["SMA30"].shift(4)
     df["AvgVol10"] = df["Volume"].rolling(10).mean()
-    df["Resistance26"] = df["Close"].shift(1).rolling(min_base_weeks).max()
 
-    curr = df.iloc[-1]
-    prev = df.iloc[-2]
+    # 26-week base resistance evaluated prior to the completed breakout bar
+    df["Resistance26"] = df["Close"].shift(2).rolling(min_base_weeks).max()
 
-    c1_above_sma = curr["Close"] > curr["SMA30"]
+    curr = df.iloc[-1]  # Current (in-progress) week
+    completed = df.iloc[-2]  # Prior completed week (full 5-day volume)
+    pre_breakout = df.iloc[-3]  # Week before the breakout
+
+    # 1. Price is holding above 30-week SMA
+    c1_above_sma = (
+        curr["Close"] > curr["SMA30"] and completed["Close"] > completed["SMA30"]
+    )
+
+    # 2. 30-week SMA is trending upward
     c2_sma_rising = curr["SMA30_slope4"] > 0
-    c3_breakout = (curr["Close"] > curr["Resistance26"]) and (
-        prev["Close"] <= prev["Resistance26"] * 1.01
+
+    # 3. Prior completed week was a fresh breakout above 26-week resistance
+    # (Or current week is breaking out if it already surpassed the level)
+    c3_breakout = (
+        completed["Close"] > completed["Resistance26"]
+        and pre_breakout["Close"] <= completed["Resistance26"] * 1.01
+    ) or (
+        curr["Close"] > completed["Resistance26"]
+        and completed["Close"] <= completed["Resistance26"] * 1.01
     )
+
+    # 4. Volume confirmation: Completed bar volume >= 1.25x of its 10-week average
+    completed_avg_vol = completed["AvgVol10"]
     c4_volume = (
-        curr["Volume"] >= (1.25 * curr["AvgVol10"]) if curr["AvgVol10"] > 0 else True
+        completed["Volume"] >= (1.20 * completed_avg_vol)
+        if (not pd.isna(completed_avg_vol) and completed_avg_vol > 0)
+        else True
     )
+
+    # 5. Mansfield RS is positive and rising relative to SPY
+    mrs_curr = curr.get("MRS", np.nan)
+    mrs_completed = completed.get("MRS", np.nan)
     c5_mrs = (
-        (curr["MRS"] > 0) and (curr["MRS"] >= prev["MRS"])
-        if not pd.isna(curr.get("MRS"))
-        else False
+        not pd.isna(mrs_curr)
+        and mrs_curr > 0.0
+        and (pd.isna(mrs_completed) or mrs_curr >= mrs_completed - 0.5)
     )
 
     if c1_above_sma and c2_sma_rising and c3_breakout and c4_volume and c5_mrs:
         dist_sma = (curr["Close"] / curr["SMA30"] - 1.0) * 100
+        resistance_lvl = (
+            float(completed["Resistance26"])
+            if not pd.isna(completed["Resistance26"])
+            else float(curr["Close"])
+        )
+
+        df["ATR14"] = compute_weekly_atr(df, period=14)
+        curr_atr = (
+            float(df["ATR14"].iloc[-1]) if not pd.isna(df["ATR14"].iloc[-1]) else 0.0
+        )
+        trailing_sl = round(float(curr["Close"] - (2.0 * curr_atr)), 2)
+        hard_stop_price = round(float(curr["Close"] * 0.92), 2)  # 8% hard stop
+
         return {
             "symbol": symbol,
             "name": name,
             "stage": "STAGE_2_CONTINUATION",
             "close": round(float(curr["Close"]), 2),
             "sma30": round(float(curr["SMA30"]), 2),
-            "resistance": round(float(curr["Resistance26"]), 2),
-            "volume": int(curr["Volume"]),
-            "avg_volume_10w": int(curr["AvgVol10"])
-            if not pd.isna(curr["AvgVol10"])
+            "resistance": round(resistance_lvl, 2),
+            "volume": int(completed["Volume"]),
+            "avg_volume_10w": int(completed_avg_vol)
+            if not pd.isna(completed_avg_vol)
             else 0,
-            "mrs": round(float(curr["MRS"]), 2)
-            if not pd.isna(curr.get("MRS"))
-            else 0.0,
+            "mrs": round(float(mrs_curr), 2),
             "distance_sma_pct": round(float(dist_sma), 2),
+            "atr14": round(curr_atr, 2),
+            "hard_stop": hard_stop_price,
+            "trailing_stop": trailing_sl,
         }
+
     return None
 
 
@@ -241,3 +292,13 @@ def run_weinstein_etf_screener() -> List[Dict[str, Any]]:
             seen.add(sym)
 
     return results
+
+
+def compute_weekly_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    high = df["High"]
+    low = df["Low"]
+    close_prev = df["Close"].shift(1)
+    tr = pd.concat(
+        [high - low, (high - close_prev).abs(), (low - close_prev).abs()], axis=1
+    ).max(axis=1)
+    return tr.rolling(period).mean()

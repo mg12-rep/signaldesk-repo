@@ -37,6 +37,8 @@ class SignalItem(BaseModel):
     swing_high: Optional[float] = None
     fill_price_est: Optional[float] = None
     hard_stop: Optional[float] = None
+    trailing_stop: Optional[float] = None
+    atr14: Optional[float] = None
     suggested_shares: Optional[int] = None
     suggested_cost: Optional[float] = None
     volume_needed: Optional[int] = None
@@ -74,20 +76,30 @@ def run_scanner_pipeline(
         stage2_buys: List[SignalItem] = []
         stage1_watchlist: List[SignalItem] = []
 
+        # Sort all candidates by Mansfield RS descending (highest relative strength first)
+        raw_candidates.sort(key=lambda x: x.get("mrs") or 0.0, reverse=True)
+
         for item in raw_candidates:
             stage_tag = item.get("stage", "STAGE_2_CONTINUATION")
+            close_px = item["close"]
+            hard_stop_px = item.get("hard_stop", round(close_px * 0.92, 2))
+
             sig = SignalItem(
                 status="BUY_TODAY"
                 if stage_tag == "STAGE_2_CONTINUATION"
                 else "WATCHLIST",
                 ticker=item["symbol"],
                 date=pd.Timestamp.today().strftime("%Y-%m-%d"),
-                trigger_price=item.get("resistance", item["close"]),
-                close=item["close"],
+                trigger_price=item.get("resistance", close_px),
+                close=close_px,
                 volume=item.get("volume", 0),
-                rs_rank=item.get("mrs"),  # Map Mansfield RS here
+                rs_rank=item.get("mrs"),  # Primary ranking column
                 swing_high=item.get("resistance"),
                 pct_from_trigger=item.get("distance_sma_pct"),
+                fill_price_est=close_px,
+                hard_stop=hard_stop_px,
+                trailing_stop=item.get("trailing_stop"),
+                atr14=item.get("atr14"),
                 stage=stage_tag,
             )
             if stage_tag == "STAGE_2_CONTINUATION":
