@@ -19,6 +19,7 @@ from app.backtest.enhanced_minervini_backtest import (
     load_universe_from_db,
 )
 from app.backtest.enhanced_minervini_config import load_config
+from app.screeners.elder_scanner_75min import scan_elder_impulse_75min
 from app.screeners.weinstein_screener import run_weinstein_etf_screener
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -68,6 +69,63 @@ def run_scanner_pipeline(
     market: str = Query("NSE"),
 ):
     # -------------------------------------------------------------
+    # Alexander Elder 75-Minute Impulse System Screener
+    # -------------------------------------------------------------
+    if strategy in ("elder_impulse_75m", "elder_75m"):
+        target_market = market.upper().strip()
+        default_csv = (
+            "C:/Work/signaldesk/data/elder_input_nse_stocks.csv"
+            if target_market == "NSE"
+            else "C:/Work/signaldesk/data/elder_input_us_stocks.csv"
+        )
+        csv_file = (
+            custom_path
+            if (custom_path and os.path.exists(custom_path))
+            else default_csv
+        )
+
+        signals = scan_elder_impulse_75min(
+            market=target_market,
+            csv_path=csv_file,
+        )
+
+        buy_signals: List[SignalItem] = []
+        for s in signals:
+            buy_signals.append(
+                SignalItem(
+                    status="BUY_TODAY",
+                    ticker=s["symbol"],
+                    date=s["signal_timestamp"][:10],
+                    trigger_price=s["entry_price"],
+                    close=s["entry_price"],
+                    fill_price_est=s["entry_price"],
+                    hard_stop=s["initial_stop"],
+                    trailing_stop=s["initial_stop"],
+                    swing_high=s["swing_high"],
+                    pct_from_trigger=round(
+                        ((s["entry_price"] / s["swing_high"]) - 1.0) * 100, 2
+                    )
+                    if s["swing_high"]
+                    else 0.0,
+                    stage=f"R:R 1:{round(s['target_1to1'] - s['entry_price'], 2)}",
+                )
+            )
+
+        market_status = signals[0]["market_regime"] if signals else "ACTIVE"
+
+        return ScannerRunResponse(
+            strategy="elder_impulse_75m",
+            mode="CUSTOM_FILE" if custom_path else "PRE_FILTERED_CSV",
+            market_label=f"{target_market}_75MIN",
+            market_status=market_status,
+            total_universe_count=len(signals),
+            scanned_count=len(signals),
+            buy_today=buy_signals,
+            near_buys=[],
+            watchlist=[],
+        )
+
+    # -------------------------------------------------------------
     # Stan Weinstein US ETF Screener Dispatch
     # -------------------------------------------------------------
     if strategy == "weinstein_etf":
@@ -76,7 +134,7 @@ def run_scanner_pipeline(
         stage2_buys: List[SignalItem] = []
         stage1_watchlist: List[SignalItem] = []
 
-        # Sort all candidates by Mansfield RS descending (highest relative strength first)
+        # Sort all candidates by Mansfield RS descending
         raw_candidates.sort(key=lambda x: x.get("mrs") or 0.0, reverse=True)
 
         for item in raw_candidates:
@@ -93,7 +151,7 @@ def run_scanner_pipeline(
                 trigger_price=item.get("resistance", close_px),
                 close=close_px,
                 volume=item.get("volume", 0),
-                rs_rank=item.get("mrs"),  # Primary ranking column
+                rs_rank=item.get("mrs"),
                 swing_high=item.get("resistance"),
                 pct_from_trigger=item.get("distance_sma_pct"),
                 fill_price_est=close_px,

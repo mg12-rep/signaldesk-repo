@@ -345,5 +345,66 @@ class IBKRAdapter(BaseBrokerAdapter):
             logger.error(f"Failed batch historical data fetch: {err}")
             return {}
 
+    def fetch_15min_historical_bars(
+        self,
+        symbol: str,
+        days: int = 90,
+        exchange: str = "SMART",
+        currency: str = "USD",
+    ) -> pd.DataFrame:
+        """
+        Fetches 15-minute OHLCV historical bars from IBKR.
+        Returns DataFrame with columns: ['ts', 'open', 'high', 'low', 'close', 'volume'].
+        """
+
+        def _fetch(ib: IB) -> pd.DataFrame:
+            contract = Stock(symbol.upper().strip(), exchange, currency)
+            qualified = ib.qualifyContracts(contract)
+            if not qualified:
+                logger.warning(f"Could not qualify IBKR contract for {symbol}")
+                return pd.DataFrame()
+
+            duration = f"{days} D"
+            bars = ib.reqHistoricalData(
+                contract,
+                endDateTime="",
+                durationStr=duration,
+                barSizeSetting="15 mins",
+                whatToShow="TRADES",
+                useRTH=True,
+                formatDate=1,
+            )
+            if not bars:
+                return pd.DataFrame()
+
+            df = pd.DataFrame(
+                [
+                    {
+                        "ts": pd.to_datetime(bar.date),
+                        "open": float(bar.open),
+                        "high": float(bar.high),
+                        "low": float(bar.low),
+                        "close": float(bar.close),
+                        "volume": int(bar.volume),
+                    }
+                    for bar in bars
+                ]
+            )
+            # Ensure timestamps are localized/converted to UTC for the TIMESTAMPTZ column
+            if df["ts"].dt.tz is None:
+                df["ts"] = (
+                    df["ts"].dt.tz_localize("America/New_York").dt.tz_convert("UTC")
+                )
+            else:
+                df["ts"] = df["ts"].dt.tz_convert("UTC")
+
+            return df
+
+        try:
+            return self._run_in_clean_thread(_fetch)
+        except Exception as e:
+            logger.error(f"Error fetching IBKR 15-minute bars for {symbol}: {e}")
+            return pd.DataFrame()
+
 
 ibkr_adapter = IBKRAdapter()

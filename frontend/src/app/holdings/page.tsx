@@ -65,7 +65,11 @@ interface ExitRecommendation {
 }
 
 type BrokerType = "ZERODHA" | "UPSTOX" | "IBKR";
-type StrategyType = "minervini_vcp" | "larry_connors" | "mean_reversion";
+type StrategyType =
+  | "minervini_vcp"
+  | "elder_impulse_75m"
+  | "larry_connors"
+  | "mean_reversion";
 
 export default function HoldingsPage() {
   const [selectedBroker, setSelectedBroker] = useState<BrokerType>("ZERODHA");
@@ -121,7 +125,6 @@ export default function HoldingsPage() {
         { method: "POST" },
       );
       if (res.ok) {
-        // After successful broker sync, refresh table from DB
         await fetchHoldings();
       } else {
         const err = await res.json();
@@ -174,17 +177,12 @@ export default function HoldingsPage() {
     setReconRunning(true);
     setReconMessage(null);
     try {
-      console.log(
-        `Triggering exit recon for ${selectedBroker} - ${selectedStrategy}`,
-      );
       const res = await fetch(
         `http://localhost:8000/api/v1/holdings/run-exit-recon?broker=${selectedBroker}&strategy=${selectedStrategy}`,
         { method: "POST" },
       );
 
-      console.log("Response Status:", res.status);
       const json = await res.json();
-      console.log("Response JSON:", json);
 
       if (res.ok) {
         const list: ExitRecommendation[] =
@@ -274,9 +272,10 @@ export default function HoldingsPage() {
       </div>
 
       {/* Strategy Tabs */}
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         {[
           { id: "minervini_vcp", label: "Minervini VCP" },
+          { id: "elder_impulse_75m", label: "Elder Impulse 75m" },
           { id: "larry_connors", label: "Larry Connors" },
           { id: "mean_reversion", label: "Mean Reversion" },
         ].map((strat) => {
@@ -486,7 +485,13 @@ export default function HoldingsPage() {
             <div className="flex items-center gap-2">
               <ShieldAlert className="h-5 w-5 text-purple-400" />
               <h2 className="text-sm font-bold text-white uppercase tracking-wider">
-                Minervini VCP Exit Recommendations
+                {selectedStrategy === "elder_impulse_75m"
+                  ? "Elder Impulse 75m Exit Recommendations"
+                  : selectedStrategy === "larry_connors"
+                    ? "Larry Connors Exit Recommendations"
+                    : selectedStrategy === "mean_reversion"
+                      ? "Mean Reversion Exit Recommendations"
+                      : "Minervini VCP Exit Recommendations"}
               </h2>
             </div>
             <span className="text-xs text-slate-400 font-mono">
@@ -509,7 +514,7 @@ export default function HoldingsPage() {
                   <th className="py-3 px-4">Notes / Trigger</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/60 text-xs font-mono">
+              <tbody className="divide-y border-slate-800/60 text-xs font-mono">
                 {reconResults.map((r, idx) => {
                   let badge = (
                     <span className="px-2.5 py-1 rounded font-bold text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-800">

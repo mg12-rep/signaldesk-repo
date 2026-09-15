@@ -10,6 +10,7 @@ import {
   Wallet,
   AlertTriangle,
   Layers,
+  Clock,
 } from "lucide-react";
 
 interface AccountBalance {
@@ -41,12 +42,13 @@ interface DashboardSummary {
   market_health: MarketHealthItem[];
 }
 
+type SyncTarget = "NSE_DAILY" | "US_DAILY" | "US_ETFS" | "NSE_15M" | "US_15M";
+
 export default function DashboardPage() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
-  const [syncingMarket, setSyncingMarket] = useState<
-    "NSE" | "US" | "US_ETFS" | null
-  >(null);
+  const [syncingTarget, setSyncingTarget] = useState<SyncTarget | null>(null);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
   const fetchDashboardData = async () => {
     setLoading(true);
@@ -67,21 +69,40 @@ export default function DashboardPage() {
     fetchDashboardData();
   }, []);
 
-  const triggerSync = async (market: "US" | "NSE" | "US_ETFS") => {
-    setSyncingMarket(market);
-    try {
-      const endpoint =
-        market === "US_ETFS"
-          ? "http://localhost:8000/api/v1/sync/us-etfs"
-          : `http://localhost:8000/api/v1/sync/${market.toLowerCase()}`;
+  const triggerSync = async (target: SyncTarget) => {
+    setSyncingTarget(target);
+    setStatusMsg(null);
 
-      await fetch(endpoint, {
-        method: "POST",
-      });
+    let endpoint = "";
+    if (target === "NSE_DAILY")
+      endpoint = "http://localhost:8000/api/v1/sync/nse/daily?full_seed=false";
+    if (target === "US_DAILY")
+      endpoint = "http://localhost:8000/api/v1/sync/us/daily";
+    if (target === "US_ETFS")
+      endpoint = "http://localhost:8000/api/v1/sync/us-etfs";
+    if (target === "NSE_15M") {
+      endpoint =
+        "http://localhost:8000/api/v1/sync/nse/15min?csv_path=C:/work/signaldesk/data/elder_input_nse_stocks.csv&days=90";
+    }
+    if (target === "US_15M") {
+      endpoint =
+        "http://localhost:8000/api/v1/sync/us/15min?csv_path=C:/work/signaldesk/data/elder_input_us_stocks.csv&days=90";
+    }
+
+    try {
+      const res = await fetch(endpoint, { method: "POST" });
+      if (res.ok) {
+        const json = await res.json();
+        setStatusMsg(json.message || `${target} sync initiated in background.`);
+      } else {
+        setStatusMsg(`Failed to trigger ${target}. Check backend console.`);
+      }
     } catch (e) {
       console.error("Sync failed", e);
+      setStatusMsg(`Network error triggering ${target}.`);
     } finally {
-      setTimeout(() => setSyncingMarket(null), 1500);
+      setTimeout(() => setSyncingTarget(null), 2000);
+      setTimeout(() => setStatusMsg(null), 6000);
     }
   };
 
@@ -106,50 +127,93 @@ export default function DashboardPage() {
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5">
-          {/* Sync NSE Button */}
-          <button
-            onClick={() => triggerSync("NSE")}
-            disabled={syncingMarket !== null}
-            className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 px-3 py-1.5 rounded-md text-xs font-medium transition disabled:opacity-50"
-          >
-            <Database
-              className={`h-3.5 w-3.5 text-blue-400 ${syncingMarket === "NSE" ? "animate-spin" : ""}`}
-            />
-            <span>
-              {syncingMarket === "NSE" ? "Syncing NSE..." : "Sync NSE"}
-            </span>
-          </button>
+        {/* Sync Controls Toolbar */}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Daily Sync Group */}
+          <div className="flex items-center bg-slate-950 p-1 rounded-lg border border-slate-800 gap-1">
+            <button
+              onClick={() => triggerSync("NSE_DAILY")}
+              disabled={syncingTarget !== null}
+              className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 px-2.5 py-1 rounded text-xs font-medium transition disabled:opacity-50"
+            >
+              <Database
+                className={`h-3.5 w-3.5 text-blue-400 ${syncingTarget === "NSE_DAILY" ? "animate-spin" : ""}`}
+              />
+              <span>
+                {syncingTarget === "NSE_DAILY" ? "Syncing..." : "NSE Daily"}
+              </span>
+            </button>
 
-          {/* Sync US Button */}
-          <button
-            onClick={() => triggerSync("US")}
-            disabled={syncingMarket !== null}
-            className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 px-3 py-1.5 rounded-md text-xs font-medium transition disabled:opacity-50"
-          >
-            <RefreshCw
-              className={`h-3.5 w-3.5 text-emerald-400 ${syncingMarket === "US" ? "animate-spin" : ""}`}
-            />
-            <span>
-              {syncingMarket === "US" ? "Syncing US..." : "Sync US (IBKR)"}
-            </span>
-          </button>
+            <button
+              onClick={() => triggerSync("US_DAILY")}
+              disabled={syncingTarget !== null}
+              className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 px-2.5 py-1 rounded text-xs font-medium transition disabled:opacity-50"
+            >
+              <RefreshCw
+                className={`h-3.5 w-3.5 text-emerald-400 ${syncingTarget === "US_DAILY" ? "animate-spin" : ""}`}
+              />
+              <span>
+                {syncingTarget === "US_DAILY" ? "Syncing..." : "US Daily"}
+              </span>
+            </button>
 
-          {/* Sync US ETFs Button */}
-          <button
-            onClick={() => triggerSync("US_ETFS")}
-            disabled={syncingMarket !== null}
-            className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 px-3 py-1.5 rounded-md text-xs font-medium transition disabled:opacity-50"
-          >
-            <Layers
-              className={`h-3.5 w-3.5 text-purple-400 ${syncingMarket === "US_ETFS" ? "animate-spin" : ""}`}
-            />
-            <span>
-              {syncingMarket === "US_ETFS" ? "Syncing ETFs..." : "Sync ETFs"}
-            </span>
-          </button>
+            <button
+              onClick={() => triggerSync("US_ETFS")}
+              disabled={syncingTarget !== null}
+              className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 px-2.5 py-1 rounded text-xs font-medium transition disabled:opacity-50"
+            >
+              <Layers
+                className={`h-3.5 w-3.5 text-purple-400 ${syncingTarget === "US_ETFS" ? "animate-spin" : ""}`}
+              />
+              <span>{syncingTarget === "US_ETFS" ? "Syncing..." : "ETFs"}</span>
+            </button>
+          </div>
+
+          {/* Intraday 15m Elder Sync Group */}
+          <div className="flex items-center bg-slate-950 p-1 rounded-lg border border-cyan-900/50 gap-1">
+            <button
+              onClick={() => triggerSync("NSE_15M")}
+              disabled={syncingTarget !== null}
+              title="Syncs 15m bars from elder_input_nse_stocks.csv"
+              className="flex items-center gap-1.5 bg-cyan-950/40 hover:bg-cyan-900/60 text-cyan-300 border border-cyan-800/60 px-2.5 py-1 rounded text-xs font-medium transition disabled:opacity-50"
+            >
+              <Clock
+                className={`h-3.5 w-3.5 text-cyan-400 ${syncingTarget === "NSE_15M" ? "animate-spin" : ""}`}
+              />
+              <span>
+                {syncingTarget === "NSE_15M" ? "Syncing..." : "NSE 15m"}
+              </span>
+            </button>
+
+            <button
+              onClick={() => triggerSync("US_15M")}
+              disabled={syncingTarget !== null}
+              title="Syncs 15m bars from elder_input_us_stocks.csv via IBKR"
+              className="flex items-center gap-1.5 bg-cyan-950/40 hover:bg-cyan-900/60 text-cyan-300 border border-cyan-800/60 px-2.5 py-1 rounded text-xs font-medium transition disabled:opacity-50"
+            >
+              <Clock
+                className={`h-3.5 w-3.5 text-cyan-400 ${syncingTarget === "US_15M" ? "animate-spin" : ""}`}
+              />
+              <span>
+                {syncingTarget === "US_15M" ? "Syncing..." : "US 15m"}
+              </span>
+            </button>
+          </div>
         </div>
       </div>
+
+      {/* Notification Banner */}
+      {statusMsg && (
+        <div className="p-3 bg-blue-950/40 border border-blue-800/60 rounded-lg text-xs text-blue-300 font-mono flex items-center justify-between">
+          <span>{statusMsg}</span>
+          <button
+            onClick={() => setStatusMsg(null)}
+            className="text-slate-500 hover:text-white"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Top Operational Telemetry */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -203,7 +267,7 @@ export default function DashboardPage() {
             </span>
           </div>
           <Link
-            href="/results"
+            href="/scanners"
             className="text-[11px] text-purple-400 hover:underline mt-1 block"
           >
             Review order tickets →

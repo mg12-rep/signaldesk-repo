@@ -327,5 +327,65 @@ class UpstoxAdapter(BaseBrokerAdapter):
         response = self._execute_request_with_retry("POST", url, json_data=payload)
         return response.json() if response else {"status": "error", "message": "Failed"}
 
+    def fetch_historical_candles(
+        self,
+        instrument_key: str,
+        interval: str = "15minute",
+        days: int = 90,
+    ) -> pd.DataFrame:
+        """
+        Fetches historical candles for 'day' or '15minute'.
+        Uses Upstox V3 for 15m (chunked into 30-day windows) and V2 for daily.
+        Converts timestamps to UTC for TIMESTAMPTZ database storage.
+        """
+        if interval == "day":
+            return self.fetch_historical_daily(instrument_key, days=days)
+
+        all_candles = []
+        end_dt = datetime.now()
+        start_dt = end_dt - timedelta(days=days)
+
+        curr_end = end_dt
+        while curr_end > start_dt:
+            curr_start = max(curr_end - timedelta(days=29), start_dt)
+            to_date_str = curr_end.strftime("%Y-%m-%d")
+            from_date_str = curr_start.strftime("%Y-%m-%d")
+
+            url = f"https://api.upstox.com/v3/historical-candle/{instrument_key}/minutes/15/{to_date_str}/{from_date_str}"
+            response = self._execute_request_with_retry("GET", url)
+
+            if response and response.status_code == 200:
+                data = response.json().get("data", {}).get("candles", [])
+                if data:
+                    all_candles.extend(data)
+
+            curr_end = curr_start - timedelta(days=1)
+            time.sleep(0.3)
+
+        if not all_candles:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(
+            all_candles,
+            columns=["timestamp", "open", "high", "low", "close", "volume", "oi"],
+        )
+        df["ts"] = pd.to_datetime(df["timestamp"])
+
+        # Ensure timestamps are converted to UTC for TIMESTAMPTZ column
+        if df["ts"].dt.tz is None:
+            df["ts"] = df["ts"].dt.tz_localize("Asia/Kolkata").dt.tz_convert("UTC")
+        else:
+            df["ts"] = df["ts"].dt.tz_convert("UTC")
+
+        df = (
+            df[["ts", "open", "high", "low", "close", "volume"]]
+            .drop_duplicates(subset=["ts"])
+            .sort_values("ts")
+        )
+        return df
+
+    # Alias for backward compatibility if called directly
+    fetch_15min_historical_bars = fetch_historical_candles
+
 
 upstox_adapter = UpstoxAdapter()

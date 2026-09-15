@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Sliders, Layers, FileSpreadsheet, Play } from "lucide-react";
+import { Sliders, Layers, FileSpreadsheet, Play, Zap } from "lucide-react";
 
 type ScanMode = "UNIVERSE" | "CUSTOM_FILE";
 type PredefinedUniverse =
@@ -13,6 +13,32 @@ type PredefinedUniverse =
   | "US_ETFS";
 type MarketType = "NSE" | "US";
 
+const STRATEGY_FILE_DEFAULTS: Record<string, Record<MarketType, string>> = {
+  elder_impulse_75m: {
+    NSE: "C:/work/signaldesk/data/elder_input_nse_stocks.csv",
+    US: "C:/work/signaldesk/data/elder_input_us_stocks.csv",
+  },
+  minervini_vcp: {
+    NSE: "C:/Work/signaldesk/data/evergreen_filter_stocks.csv",
+    US: "C:/Work/signaldesk/data/evergreen_filter_us_stocks.csv",
+  },
+  high_tight_flag: {
+    NSE: "C:/Work/signaldesk/data/htf_candidates_nse.csv",
+    US: "C:/Work/signaldesk/data/htf_candidates_us.csv",
+  },
+  relative_strength_leaders: {
+    NSE: "C:/Work/signaldesk/data/rs_leaders_nse.csv",
+    US: "C:/Work/signaldesk/data/rs_leaders_us.csv",
+  },
+};
+
+const resolveDefaultPath = (strategy: string, market: MarketType): string => {
+  return (
+    STRATEGY_FILE_DEFAULTS[strategy]?.[market] ||
+    "C:/Work/signaldesk/data/evergreen_filter_stocks.csv"
+  );
+};
+
 export default function ScannerConfigPage() {
   const router = useRouter();
 
@@ -21,19 +47,32 @@ export default function ScannerConfigPage() {
   const [scanMode, setScanMode] = useState<ScanMode>("UNIVERSE");
   const [selectedUniverse, setSelectedUniverse] =
     useState<PredefinedUniverse>("NSE_500");
-  const [customFilePath, setCustomFilePath] = useState(
-    "C:/Work/SignalDesk/data/evergreen_filter_stocks.csv",
-  );
   const [customFileMarket, setCustomFileMarket] = useState<MarketType>("NSE");
+  const [customFilePath, setCustomFilePath] = useState(
+    resolveDefaultPath("minervini_vcp", "NSE"),
+  );
   const [isRunning, setIsRunning] = useState(false);
 
-  // Auto-switch universe when selecting Weinstein ETF model
+  // Dynamic strategy change handler
   const handleStrategyChange = (newStrategy: string) => {
     setStrategyModel(newStrategy);
+
     if (newStrategy === "weinstein_etf") {
       setScanMode("UNIVERSE");
       setSelectedUniverse("US_ETFS");
+    } else if (newStrategy === "elder_impulse_75m") {
+      setScanMode("CUSTOM_FILE");
+      setCustomFilePath(resolveDefaultPath(newStrategy, customFileMarket));
+    } else {
+      // Revert to strategy's specific default path for the current active market
+      setCustomFilePath(resolveDefaultPath(newStrategy, customFileMarket));
     }
+  };
+
+  // Dynamic market change handler
+  const handleMarketChange = (m: MarketType) => {
+    setCustomFileMarket(m);
+    setCustomFilePath(resolveDefaultPath(strategyModel, m));
   };
 
   const handleLaunchScan = () => {
@@ -80,6 +119,9 @@ export default function ScannerConfigPage() {
             <option value="minervini_vcp">
               Minervini Stage-2 VCP Breakout
             </option>
+            <option value="elder_impulse_75m">
+              Alexander Elder 75-Min Impulse System (Intraday)
+            </option>
             <option value="weinstein_etf">
               Stan Weinstein US ETF Stage Screener
             </option>
@@ -89,6 +131,21 @@ export default function ScannerConfigPage() {
             </option>
           </select>
         </div>
+
+        {/* Strategy Details Banner for Elder Impulse */}
+        {strategyModel === "elder_impulse_75m" && (
+          <div className="p-3 bg-cyan-950/30 border border-cyan-800/50 rounded-lg text-xs text-cyan-300 flex items-start gap-2">
+            <Zap className="h-4 w-4 text-cyan-400 mt-0.5 shrink-0" />
+            <div>
+              <span className="font-semibold">
+                75-Minute Multi-Timeframe Impulse:
+              </span>{" "}
+              Scans the 5 daily intraday bars against daily EMA trend stacks,
+              volume expansion (&ge;1.25x), and recent timing sequences
+              (Green/Blue/Red transitions)[cite: 2].
+            </div>
+          </div>
+        )}
 
         <div className="border-t border-slate-800/70" />
 
@@ -181,7 +238,7 @@ export default function ScannerConfigPage() {
                       key={m}
                       type="button"
                       disabled={scanMode !== "CUSTOM_FILE"}
-                      onClick={() => setCustomFileMarket(m)}
+                      onClick={() => handleMarketChange(m)}
                       className={`px-3 py-1 text-xs rounded border transition font-mono ${
                         isMarketSelected
                           ? "bg-emerald-950/60 border-emerald-500 text-emerald-300 font-semibold"
@@ -200,7 +257,7 @@ export default function ScannerConfigPage() {
               disabled={scanMode !== "CUSTOM_FILE"}
               value={customFilePath}
               onChange={(e) => setCustomFilePath(e.target.value)}
-              placeholder="e.g. C:/Work/SignalDesk/data/my_screen.csv"
+              placeholder="e.g. C:/Work/signaldesk/data/my_screen.csv"
               className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3.5 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-emerald-500 disabled:cursor-not-allowed transition"
             />
           </div>
