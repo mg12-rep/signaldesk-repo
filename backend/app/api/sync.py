@@ -58,10 +58,19 @@ def background_nse_15min_sync(csv_path: Optional[str] = None, days: int = 90):
         logger.error(f"❌ [NSE 15MIN FAILED] Error: {e}", exc_info=True)
 
 
-def background_us_daily_sync():
+def background_us_daily_with_etf_sync():
     logger.info("🚀 [US DAILY] Starting US & Global market data sync via TWS/IBKR...")
     try:
         sync_us_etf_market_data()
+        seed_us_universe_from_db()
+        logger.info("✅ [US DAILY] S&P 500 & US ETF sync complete.")
+    except Exception as e:
+        logger.error(f"❌ [US DAILY FAILED] Error: {e}", exc_info=True)
+
+
+def background_us_daily_sync():
+    logger.info("🚀 [US DAILY] Starting US & Global market data sync via TWS/IBKR...")
+    try:
         seed_us_universe_from_db()
         logger.info("✅ [US DAILY] S&P 500 & US ETF sync complete.")
     except Exception as e:

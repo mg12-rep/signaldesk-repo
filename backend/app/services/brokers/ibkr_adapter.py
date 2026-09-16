@@ -406,5 +406,102 @@ class IBKRAdapter(BaseBrokerAdapter):
             logger.error(f"Error fetching IBKR 15-minute bars for {symbol}: {e}")
             return pd.DataFrame()
 
+    def fetch_multiple_15min_bars(
+        self,
+        symbols: List[str],
+        days: int = 90,
+        delay_seconds: float = 1.5,
+    ) -> Dict[str, pd.DataFrame]:
+        """
+        Maintains a single persistent connection across all tickers to fetch 15-minute bars,
+        avoiding repetitive connect/disconnect cycles and TWS pacing drops.
+        """
+
+        def _batch(ib: IB) -> Dict[str, pd.DataFrame]:
+            results = {}
+
+            def on_error(req_id, error_code, error_string, contract):
+                if error_code == 162:
+                    logger.warning(
+                        f"⚠️ IBKR Pacing Violation (Code 162): {error_string}"
+                    )
+                elif error_code in (200, 321):
+                    logger.warning(
+                        f"⚠️ IBKR Contract Warning ({error_code}): {error_string}"
+                    )
+
+            ib.errorEvent += on_error
+
+            for idx, raw_sym in enumerate(symbols, start=1):
+                sym = raw_sym.upper().strip()
+                logger.info(
+                    f"[{idx}/{len(symbols)}] Requesting 15m bars for {sym} ({days}d)..."
+                )
+
+                try:
+                    contract = Stock(sym, "SMART", "USD")
+                    qualified = ib.qualifyContracts(contract)
+                    if not qualified:
+                        logger.warning(f"Could not qualify {sym}, skipping.")
+                        continue
+
+                    bars = ib.reqHistoricalData(
+                        contract,
+                        endDateTime="",
+                        durationStr=f"{days} D",
+                        barSizeSetting="15 mins",
+                        whatToShow="TRADES",
+                        useRTH=True,
+                        formatDate=1,
+                        timeout=20,
+                    )
+
+                    if bars:
+                        df = pd.DataFrame(
+                            [
+                                {
+                                    "ts": pd.to_datetime(b.date),
+                                    "open": float(b.open),
+                                    "high": float(b.high),
+                                    "low": float(b.low),
+                                    "close": float(b.close),
+                                    "volume": int(b.volume),
+                                }
+                                for b in bars
+                            ]
+                        )
+                        if df["ts"].dt.tz is None:
+                            df["ts"] = (
+                                df["ts"]
+                                .dt.tz_localize("America/New_York")
+                                .dt.tz_convert("UTC")
+                            )
+                        else:
+                            df["ts"] = df["ts"].dt.tz_convert("UTC")
+
+                        results[sym] = df
+                        logger.info(
+                            f"[{idx}/{len(symbols)}] ✅ Received {len(df)} bars for {sym}"
+                        )
+                    else:
+                        logger.warning(
+                            f"[{idx}/{len(symbols)}] ⚠️ Empty bars returned for {sym}"
+                        )
+
+                except Exception as e:
+                    logger.error(
+                        f"[{idx}/{len(symbols)}] Error fetching 15m bars for {sym}: {e}"
+                    )
+
+                ib.sleep(delay_seconds)
+
+            return results
+
+        try:
+            return self._run_in_clean_thread(_batch)
+        except Exception as err:
+            logger.error(f"Failed batch 15m historical data fetch: {err}")
+            return {}
+
 
 ibkr_adapter = IBKRAdapter()

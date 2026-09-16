@@ -69,6 +69,7 @@ type StrategyType =
   | "minervini_vcp"
   | "elder_impulse_75m"
   | "larry_connors"
+  | "Weinstein_ETF"
   | "mean_reversion";
 
 export default function HoldingsPage() {
@@ -277,6 +278,7 @@ export default function HoldingsPage() {
           { id: "minervini_vcp", label: "Minervini VCP" },
           { id: "elder_impulse_75m", label: "Elder Impulse 75m" },
           { id: "larry_connors", label: "Larry Connors" },
+          { id: "Weinstein_ETF", label: "Weinstein Strategy ETF" },
           { id: "mean_reversion", label: "Mean Reversion" },
         ].map((strat) => {
           const isActive = selectedStrategy === strat.id;
@@ -489,9 +491,11 @@ export default function HoldingsPage() {
                   ? "Elder Impulse 75m Exit Recommendations"
                   : selectedStrategy === "larry_connors"
                     ? "Larry Connors Exit Recommendations"
-                    : selectedStrategy === "mean_reversion"
-                      ? "Mean Reversion Exit Recommendations"
-                      : "Minervini VCP Exit Recommendations"}
+                    : selectedStrategy === "Weinstein_ETF"
+                      ? "Larry Connors Exit Recommendations"
+                      : selectedStrategy === "mean_reversion"
+                        ? "Mean Reversion Exit Recommendations"
+                        : "Minervini VCP Exit Recommendations"}
               </h2>
             </div>
             <span className="text-xs text-slate-400 font-mono">

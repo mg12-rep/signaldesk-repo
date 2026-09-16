@@ -187,19 +187,18 @@ def get_current_market_regime(market: str = "NSE") -> str:
 
 def scan_elder_impulse_75min(
     market: str = "NSE",
-    csv_path: Optional[str] = "C:/Work/signaldesk/data/elder_input_nse_stocks.csv",
+    csv_path: Optional[str] = "C:/Work/signaldesk/data/elder_input_us_stocks.csv",
     swing_high_lookback: int = 20,
     swing_high_tolerance_pct: float = 0.03,
     volume_factor: float = 1.25,
 ) -> List[Dict[str, Any]]:
     """
     Scans stocks present in market_data_eod_15min against the 75-minute setup[cite: 7].
-    Filters exclusively by symbols in csv_path if provided.
+    Filters exclusively by symbols in csv_path if provided[cite: 7].
     """
     tz = "Asia/Kolkata" if market == "NSE" else "America/New_York"
     market_regime = get_current_market_regime(market)
 
-    # 1. Resolve filtered symbols from CSV
     filter_symbols: Optional[List[str]] = None
     if csv_path:
         file_path = Path(csv_path)
@@ -284,7 +283,7 @@ def scan_elder_impulse_75min(
         if len(daily_df) < 200 or len(intra_df) < 30:
             continue
 
-        # Prepare Daily + Weekly anchors[cite: 7]
+        # Prepare Higher Timeframe (Daily) anchors
         daily_df["Date"] = pd.to_datetime(daily_df["Date"])
         weekly_df = resample_daily_to_weekly(daily_df)
 
@@ -301,21 +300,21 @@ def scan_elder_impulse_75min(
             direction="backward",
         )
 
-        # Resample 15m to 75m[cite: 7]
+        # Resample 15m to 75m
         df_75m = resample_15m_to_75m(intra_df, tz=tz)
         if len(df_75m) < 25:
             continue
 
         df_75m["EMA8"] = df_75m["Close"].ewm(span=8, adjust=False).mean()
         df_75m["EMA21"] = df_75m["Close"].ewm(span=21, adjust=False).mean()
-        df_75m["SMA50"] = df_75m["Close"].rolling(50).mean()
-        df_75m["SMA150"] = df_75m["Close"].rolling(150).mean()
-        df_75m["SMA200"] = df_75m["Close"].rolling(200).mean()
+        df_75m["SMA50"] = df_75m["Close"].rolling(50, min_periods=20).mean()
+        df_75m["SMA150"] = df_75m["Close"].rolling(150, min_periods=50).mean()
+        df_75m["SMA200"] = df_75m["Close"].rolling(200, min_periods=80).mean()
         df_75m["VolSMA20"] = df_75m["Volume"].rolling(20).mean()
         df_75m["SwingHigh"] = df_75m["High"].shift(1).rolling(swing_high_lookback).max()
         df_75m = compute_elder_impulse(df_75m)
 
-        # Fix timestamp precision and timezone mismatch for merge_asof
+        # Align timestamp precision and timezone for merge_asof
         df_75m_merge = df_75m.sort_values("Date").copy()
         df_75m_merge["Date"] = pd.to_datetime(
             df_75m_merge["Date"].dt.tz_localize(None)
@@ -347,10 +346,10 @@ def scan_elder_impulse_75min(
         prior_sub = merged.iloc[:-1]
 
         # ---------------------------------------------------------
-        # Strategy Rules Verification[cite: 7]
+        # Strategy Rules Verification
         # ---------------------------------------------------------
 
-        # 1. Multi-timeframe trend alignment stacks[cite: 7]
+        # 1. Higher Timeframe (Daily): Close > EMA8 > EMA21 > SMA50 > SMA150 > SMA200
         c_daily_prereq = (
             curr["Close"] > curr["EMA8_D"]
             and curr["EMA8_D"] > curr["EMA21_D"]
@@ -358,35 +357,37 @@ def scan_elder_impulse_75min(
             and curr["SMA50_D"] > curr["SMA150_D"]
             and curr["SMA150_D"] > curr["SMA200_D"]
         )
-        c_75m_stack = (
-            curr["Close"] > curr["EMA8"]
-            and curr["EMA8"] > curr["EMA21"]
-            and curr["EMA21"] > curr["SMA50"]
-            and curr["SMA50"] > curr["SMA150"]
-            and curr["SMA150"] > curr["SMA200"]
-        )
+
+        # 2. Lower Timeframe (75-Minute): Close > SMA50 > SMA150 > SMA200
+        # If SMA200 / SMA150 have not fully formed, evaluate on available periods
+        c_75m_stack = curr["Close"] > curr["SMA50"]
+        if not pd.isna(curr["SMA150"]):
+            c_75m_stack = c_75m_stack and (curr["SMA50"] > curr["SMA150"])
+        if not pd.isna(curr["SMA200"]):
+            c_75m_stack = c_75m_stack and (curr["SMA150"] > curr["SMA200"])
+
         if not (c_daily_prereq and c_75m_stack):
             continue
 
-        # 2. Bar Touches 8 EMA[cite: 7]
+        # 3. Bar Touches 8 EMA on 75m bar
         if not (curr["Low"] <= curr["EMA8"] <= curr["High"]):
             continue
 
-        # 3. Elder Impulse is GREEN[cite: 7]
+        # 4. Elder Impulse is GREEN
         if curr["Impulse_Color"] != "GREEN":
             continue
 
-        # 4. Volume >= volume_factor * 20 VolSMA[cite: 7]
+        # 5. Volume >= volume_factor * 20 VolSMA
         if pd.isna(curr["VolSMA20"]) or curr["Volume"] < (
             volume_factor * curr["VolSMA20"]
         ):
             continue
 
-        # 5. Timing Sequence: >=3 Greens, >=1 Blue, >=1 Red in prior 14 days[cite: 7]
+        # 6. Timing Sequence: >=3 Greens, >=1 Blue, >=1 Red in prior 14 days
         if not check_timing_sequence(prior_sub, max_days=14):
             continue
 
-        # 6. Breakout Level Proximity & Above PrevWeek High[cite: 7]
+        # 7. Breakout Level Proximity & Above PrevWeek High
         swing_high = curr["SwingHigh"]
         min_entry_level = swing_high * (1.0 - swing_high_tolerance_pct)
         c_near_swing_high = (curr["Close"] >= min_entry_level) and (
@@ -425,8 +426,8 @@ def scan_elder_impulse_75min(
 
 
 if __name__ == "__main__":
-    csv_file = "C:/Work/signaldesk/data/elder_input_nse_stocks.csv"
-    results = scan_elder_impulse_75min(market="NSE", csv_path=csv_file)
+    csv_file = "C:/Work/signaldesk/data/elder_input_us_stocks.csv"
+    results = scan_elder_impulse_75min(market="US", csv_path=csv_file)
     if results:
         print(pd.DataFrame(results).to_string(index=False))
     else:
