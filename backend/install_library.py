@@ -14,5 +14,5 @@ try:
     import kiteconnect as almb
 except ImportError:
     # If the library isn't found, install it on the fly
-    install_library("kiteconnect")
+    install_library("lightweight-charts")
     # import python-multipart as almb

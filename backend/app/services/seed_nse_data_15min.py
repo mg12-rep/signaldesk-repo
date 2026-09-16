@@ -1,7 +1,7 @@
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -16,6 +16,8 @@ sync_db_url = os.getenv("DATABASE_URL", "").replace(
     "postgresql+asyncpg://", "postgresql+psycopg2://"
 )
 engine = create_engine(sync_db_url, pool_size=5, max_overflow=5)
+
+IST_OFFSET = timezone(timedelta(hours=5, minutes=30))
 
 
 def run_15min_ingestion_pipeline(
@@ -81,6 +83,7 @@ def run_15min_ingestion_pipeline(
     skipped_count = 0
     failed_count = 0
     now_utc = datetime.now(timezone.utc)
+    today_ist_date = now_utc.astimezone(IST_OFFSET).date()
 
     with engine.connect() as conn:
         for idx, sym in enumerate(symbols, start=1):
@@ -123,19 +126,24 @@ def run_15min_ingestion_pipeline(
                 if latest_ts.tzinfo is None:
                     latest_ts = latest_ts.replace(tzinfo=timezone.utc)
 
-                delta = now_utc - latest_ts
-                days_missing = delta.days
+                latest_ist = latest_ts.astimezone(IST_OFFSET)
+                latest_ist_date = latest_ist.date()
 
-                # If last bar is within the last 4 hours, it is already current
-                if days_missing == 0 and delta.total_seconds() < 14400:
+                # If we already have today's final closing bar (09:45 UTC / 15:15 IST), skip
+                if (
+                    latest_ist_date == today_ist_date
+                    and latest_ist.time().hour >= 15
+                    and latest_ist.time().minute >= 15
+                ):
                     skipped_count += 1
                     logger.info(
-                        f"[{idx}/{len(symbols)}] ⚡ {sym} is already up to date (Latest: {latest_ts})."
+                        f"[{idx}/{len(symbols)}] ⚡ {sym} is already up to date for today ({latest_ts})."
                     )
                     continue
 
-                # Fetch only missing days plus 1 buffer day for candle reconciliation
-                fetch_days = min(max(days_missing + 1, 2), lookback)
+                # Fetch missing calendar days plus 1 buffer day for reconciliation
+                calendar_days_missing = (today_ist_date - latest_ist_date).days
+                fetch_days = min(max(calendar_days_missing + 1, 2), lookback)
                 logger.info(
                     f"[{idx}/{len(symbols)}] 🔄 Delta fetching {fetch_days}d for {sym} (Latest: {latest_ts})..."
                 )

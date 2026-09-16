@@ -1,5 +1,5 @@
 import os
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -19,10 +19,16 @@ from app.backtest.enhanced_minervini_backtest import (
     load_universe_from_db,
 )
 from app.backtest.enhanced_minervini_config import load_config
-from app.screeners.elder_scanner_75min import scan_elder_impulse_75min
+from app.screeners.elder_scanner_75min import (
+    compute_elder_impulse,
+    engine,
+    resample_15m_to_75m,
+    scan_elder_impulse_75min,
+)
 from app.screeners.weinstein_screener import run_weinstein_etf_screener
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import text
 
 router = APIRouter()
 
@@ -60,6 +66,9 @@ class ScannerRunResponse(BaseModel):
     watchlist: List[SignalItem]
 
 
+# -------------------------------------------------------------------------
+# Scanner Run Pipeline
+# -------------------------------------------------------------------------
 @router.get("/run", response_model=ScannerRunResponse)
 def run_scanner_pipeline(
     strategy: str = Query("minervini_vcp"),
@@ -83,46 +92,64 @@ def run_scanner_pipeline(
             if (custom_path and os.path.exists(custom_path))
             else default_csv
         )
+        #########################delete
+        with engine.connect() as conn:
+            df_raw = pd.read_sql(
+                text("""
+                    SELECT ts, open, high, low, close, volume
+                    FROM market_data_eod_15min
+                    WHERE symbol_id = (SELECT id FROM symbols WHERE UPPER(trading_symbol) = 'BHEL' LIMIT 1)
+                    ORDER BY ts ASC;
+                """),
+                conn,
+            )
 
-        signals = scan_elder_impulse_75min(
+        df_75m = resample_15m_to_75m(df_raw, tz="Asia/Kolkata")
+        print(df_75m.tail(10))
+        #########################delete
+
+        raw_buys, raw_watchlist = scan_elder_impulse_75min(
             market=target_market,
             csv_path=csv_file,
         )
 
-        buy_signals: List[SignalItem] = []
-        for s in signals:
-            buy_signals.append(
-                SignalItem(
-                    status="BUY_TODAY",
-                    ticker=s["symbol"],
-                    date=s["signal_timestamp"][:10],
-                    trigger_price=s["entry_price"],
-                    close=s["entry_price"],
-                    fill_price_est=s["entry_price"],
-                    hard_stop=s["initial_stop"],
-                    trailing_stop=s["initial_stop"],
-                    swing_high=s["swing_high"],
-                    pct_from_trigger=round(
-                        ((s["entry_price"] / s["swing_high"]) - 1.0) * 100, 2
-                    )
-                    if s["swing_high"]
-                    else 0.0,
-                    stage=f"R:R 1:{round(s['target_1to1'] - s['entry_price'], 2)}",
+        def to_signal_item(s: Dict[str, Any], status: str) -> SignalItem:
+            return SignalItem(
+                status=status,
+                ticker=s["symbol"],
+                date=s["signal_timestamp"][:10],
+                trigger_price=s["entry_price"],
+                close=s["entry_price"],
+                fill_price_est=s["entry_price"],
+                hard_stop=s["initial_stop"],
+                trailing_stop=s["initial_stop"],
+                swing_high=s["swing_high"],
+                pct_from_trigger=round(
+                    ((s["entry_price"] / s["swing_high"]) - 1.0) * 100, 2
                 )
+                if s["swing_high"]
+                else 0.0,
+                stage=f"{s.get('color', 'SETUP')} • Vol {s.get('volume_ratio', 1.0)}x",
             )
 
-        market_status = signals[0]["market_regime"] if signals else "ACTIVE"
+        buy_signals = [to_signal_item(b, "BUY_TODAY") for b in raw_buys]
+        watchlist_signals = [to_signal_item(w, "WATCHLIST") for w in raw_watchlist]
+
+        all_candidates = raw_buys + raw_watchlist
+        market_status = (
+            all_candidates[0]["market_regime"] if all_candidates else "ACTIVE"
+        )
 
         return ScannerRunResponse(
             strategy="elder_impulse_75m",
             mode="CUSTOM_FILE" if custom_path else "PRE_FILTERED_CSV",
             market_label=f"{target_market}_75MIN",
             market_status=market_status,
-            total_universe_count=len(signals),
-            scanned_count=len(signals),
+            total_universe_count=len(all_candidates),
+            scanned_count=len(all_candidates),
             buy_today=buy_signals,
             near_buys=[],
-            watchlist=[],
+            watchlist=watchlist_signals,
         )
 
     # -------------------------------------------------------------
@@ -134,7 +161,6 @@ def run_scanner_pipeline(
         stage2_buys: List[SignalItem] = []
         stage1_watchlist: List[SignalItem] = []
 
-        # Sort all candidates by Mansfield RS descending
         raw_candidates.sort(key=lambda x: x.get("mrs") or 0.0, reverse=True)
 
         for item in raw_candidates:
@@ -233,14 +259,14 @@ def run_scanner_pipeline(
                 status_code=400, detail=f"Unknown target universe: {universe}"
             )
 
-    engine = get_db_engine(cfg["db_url"])
+    engine_sync = get_db_engine(cfg["db_url"])
     m_cfg = cfg["markets"][market_label]
     index_symbol_id = m_cfg.get("index_symbol_id")
     exchange_id = m_cfg.get("exchange_id")
     benchmark_symbol_id = m_cfg.get("benchmark_symbol_id", index_symbol_id or 1)
 
     universe_data = load_universe_from_db(
-        engine,
+        engine_sync,
         index_symbol_id=index_symbol_id,
         exchange_id=exchange_id,
         start_date=cfg.get("start_date"),
@@ -265,7 +291,7 @@ def run_scanner_pipeline(
     index_return_series = None
     market_health = None
     idx_df = load_benchmark_from_db(
-        engine,
+        engine_sync,
         benchmark_symbol_id=benchmark_symbol_id,
         start_date=cfg.get("start_date"),
         end_date=cfg.get("end_date"),

@@ -2,7 +2,7 @@ import logging
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -27,7 +27,7 @@ engine = create_engine(sync_db_url, pool_size=5, max_overflow=5)
 
 
 def compute_elder_impulse(df: pd.DataFrame) -> pd.DataFrame:
-    """Calculates Alexander Elder's Impulse System (13 EMA + MACD Histogram 12, 26, 9)[cite: 7]."""
+    """Calculates Alexander Elder's Impulse System (13 EMA + MACD Histogram 12, 26, 9)[cite: 8]."""
     df["EMA13"] = df["Close"].ewm(span=13, adjust=False).mean()
     df["EMA13_Slope"] = df["EMA13"] - df["EMA13"].shift(1)
 
@@ -48,7 +48,7 @@ def compute_elder_impulse(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def resample_daily_to_weekly(daily_df: pd.DataFrame) -> pd.DataFrame:
-    """Resamples daily bars to Friday-anchored weekly candles with PrevWeek High[cite: 7]."""
+    """Resamples daily bars to Friday-anchored weekly candles with PrevWeek High[cite: 8]."""
     df = daily_df.copy().sort_values("Date").drop_duplicates(subset=["Date"])
     df = df.set_index("Date")
     weekly = (
@@ -73,7 +73,12 @@ def resample_15m_to_75m(
     intraday_df: pd.DataFrame, tz: str = "Asia/Kolkata"
 ) -> pd.DataFrame:
     """
-    Resamples 15m UTC bars into 5 daily 75m bars anchored at 09:15 AM local session[cite: 7].
+    Groups intraday 15m bars into the 5 standard daily 75m bars:
+    - Bar 1: 09:15 - 10:30
+    - Bar 2: 10:30 - 11:45
+    - Bar 3: 11:45 - 13:00
+    - Bar 4: 13:00 - 14:15
+    - Bar 5: 14:15 - 15:30
     """
     df = intraday_df.copy().sort_values("ts").drop_duplicates(subset=["ts"])
     df["Date"] = pd.to_datetime(df["ts"])
@@ -83,24 +88,64 @@ def resample_15m_to_75m(
     else:
         df["Date"] = df["Date"].dt.tz_convert(tz)
 
-    df = df.set_index("Date")
+    # Map each 15m bar start time to its 75m parent anchor
+    session_map = {
+        # Bar 1 (09:15 - 10:30)
+        "09:15": "09:15",
+        "09:30": "09:15",
+        "09:45": "09:15",
+        "10:00": "09:15",
+        "10:15": "09:15",
+        # Bar 2 (10:30 - 11:45)
+        "10:30": "10:30",
+        "10:45": "10:30",
+        "11:00": "10:30",
+        "11:15": "10:30",
+        "11:30": "10:30",
+        # Bar 3 (11:45 - 13:00)
+        "11:45": "11:45",
+        "12:00": "11:45",
+        "12:15": "11:45",
+        "12:30": "11:45",
+        "12:45": "11:45",
+        # Bar 4 (13:00 - 14:15)
+        "13:00": "13:00",
+        "13:15": "13:00",
+        "13:30": "13:00",
+        "13:45": "13:00",
+        "14:00": "13:00",
+        # Bar 5 (14:15 - 15:30)
+        "14:15": "14:15",
+        "14:30": "14:15",
+        "14:45": "14:15",
+        "15:00": "14:15",
+        "15:15": "14:15",
+    }
+
+    df["time_str"] = df["Date"].dt.strftime("%H:%M")
+    df["anchor_time"] = df["time_str"].map(session_map)
+    df = df.dropna(subset=["anchor_time"]).copy()
+
+    # Construct the exact 75m candle timestamp: Date + Anchor Time
+    df["bar_75m_dt"] = pd.to_datetime(
+        df["Date"].dt.strftime("%Y-%m-%d") + " " + df["anchor_time"]
+    ).dt.tz_localize(tz)
 
     resampled = (
-        df.resample("75min", offset="15min")
+        df.groupby("bar_75m_dt")
         .agg(
-            {
-                "open": "first",
-                "high": "max",
-                "low": "min",
-                "close": "last",
-                "volume": "sum",
-            }
+            open=("open", "first"),
+            high=("high", "max"),
+            low=("low", "min"),
+            close=("close", "last"),
+            volume=("volume", "sum"),
         )
-        .dropna()
         .reset_index()
     )
+
     resampled.rename(
         columns={
+            "bar_75m_dt": "Date",
             "open": "Open",
             "high": "High",
             "low": "Low",
@@ -109,18 +154,11 @@ def resample_15m_to_75m(
         },
         inplace=True,
     )
-
-    resampled["time_str"] = resampled["Date"].dt.strftime("%H:%M")
-    valid_sessions = ["09:15", "10:30", "11:45", "13:00", "14:15"]
-    resampled = resampled[resampled["time_str"].isin(valid_sessions)].copy()
-    resampled.drop(columns=["time_str"], inplace=True)
-    return resampled
+    return resampled.sort_values("Date")
 
 
 def check_timing_sequence(sub_df: pd.DataFrame, max_days: int = 14) -> bool:
-    """
-    Requires >= 3 Greens, >= 1 Blue, and >= 1 Red within the prior 14 days[cite: 7].
-    """
+    """Requires >= 3 Greens, >= 1 Blue, and >= 1 Red within the prior 14 days[cite: 8]."""
     if sub_df.empty or len(sub_df) < 5:
         return False
 
@@ -153,7 +191,7 @@ def check_timing_sequence(sub_df: pd.DataFrame, max_days: int = 14) -> bool:
 
 
 def get_current_market_regime(market: str = "NSE") -> str:
-    """Checks whether the market benchmark is STRONG or WEAK[cite: 7]."""
+    """Checks whether the market benchmark is STRONG or WEAK[cite: 8]."""
     benchmark_id = 2 if market == "NSE" else 5201
     query = text("""
         SELECT date AS "Date", close AS "Close"
@@ -187,51 +225,59 @@ def get_current_market_regime(market: str = "NSE") -> str:
 
 def scan_elder_impulse_75min(
     market: str = "NSE",
-    csv_path: Optional[str] = "C:/Work/signaldesk/data/elder_input_us_stocks.csv",
+    csv_path: Optional[str] = None,
     swing_high_lookback: int = 20,
-    swing_high_tolerance_pct: float = 0.03,
-    volume_factor: float = 1.25,
-) -> List[Dict[str, Any]]:
+    swing_high_tolerance_pct: float = 0.05,
+    volume_factor: float = 1.0,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
-    Scans stocks present in market_data_eod_15min against the 75-minute setup[cite: 7].
-    Filters exclusively by symbols in csv_path if provided[cite: 7].
+    Scans stocks and returns (buy_today, watchlist) candidates.
+    - watchlist: Satisfies macro daily trend, 75m Close > SMA50, 8 EMA touch, and swing proximity.
+    - buy_today: Also triggers GREEN impulse with expanding volume.
     """
-    tz = "Asia/Kolkata" if market == "NSE" else "America/New_York"
-    market_regime = get_current_market_regime(market)
+    market_upper = market.upper().strip()
+    tz = "America/New_York" if market_upper == "US" else "Asia/Kolkata"
+    market_regime = get_current_market_regime(market_upper)
+
+    if not csv_path:
+        csv_path = (
+            "C:/Work/signaldesk/data/elder_input_us_stocks.csv"
+            if market_upper == "US"
+            else "C:/Work/signaldesk/data/elder_input_nse_stocks.csv"
+        )
 
     filter_symbols: Optional[List[str]] = None
-    if csv_path:
-        file_path = Path(csv_path)
-        if file_path.exists():
-            df_csv = pd.read_csv(file_path)
-            symbol_col = None
-            for col in [
-                "symbol",
-                "trading_symbol",
-                "Symbol",
-                "TradingSymbol",
-                "Ticker",
-                "ticker",
-            ]:
-                if col in df_csv.columns:
-                    symbol_col = col
-                    break
-            if not symbol_col:
-                symbol_col = df_csv.columns[0]
-            filter_symbols = (
-                df_csv[symbol_col]
-                .dropna()
-                .astype(str)
-                .str.strip()
-                .str.upper()
-                .unique()
-                .tolist()
-            )
-            logger.info(f"Loaded {len(filter_symbols)} tickers from CSV: {csv_path}")
-        else:
-            logger.warning(
-                f"CSV path {csv_path} not found. Scanning all symbols in 15m table."
-            )
+    file_path = Path(csv_path)
+    if file_path.exists():
+        df_csv = pd.read_csv(file_path)
+        symbol_col = None
+        for col in [
+            "symbol",
+            "trading_symbol",
+            "Symbol",
+            "TradingSymbol",
+            "Ticker",
+            "ticker",
+        ]:
+            if col in df_csv.columns:
+                symbol_col = col
+                break
+        if not symbol_col:
+            symbol_col = df_csv.columns[0]
+        filter_symbols = (
+            df_csv[symbol_col]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .str.upper()
+            .unique()
+            .tolist()
+        )
+        logger.info(f"Loaded {len(filter_symbols)} tickers from CSV: {csv_path}")
+    else:
+        logger.warning(
+            f"CSV path {csv_path} not found. Scanning all symbols in 15m table."
+        )
 
     if filter_symbols:
         symbols_q = text("""
@@ -256,10 +302,11 @@ def scan_elder_impulse_75min(
         symbols = conn.execute(symbols_q, params).fetchall()
 
     logger.info(
-        f"🔍 Running 75m Elder Impulse Scanner on {len(symbols)} symbols ({market} Regime: {market_regime})..."
+        f"🔍 Running 75m Elder Impulse Scanner on {len(symbols)} symbols ({market_upper} Regime: {market_regime})..."
     )
 
-    candidates: List[Dict[str, Any]] = []
+    buy_today: List[Dict[str, Any]] = []
+    watchlist: List[Dict[str, Any]] = []
 
     for sid, sym in symbols:
         daily_q = text("""
@@ -280,7 +327,7 @@ def scan_elder_impulse_75min(
             daily_df = pd.read_sql(daily_q, conn, params={"sid": sid})
             intra_df = pd.read_sql(intra_q, conn, params={"sid": sid})
 
-        if len(daily_df) < 200 or len(intra_df) < 30:
+        if len(daily_df) < 200 or len(intra_df) < 25:
             continue
 
         # Prepare Higher Timeframe (Daily) anchors
@@ -308,8 +355,6 @@ def scan_elder_impulse_75min(
         df_75m["EMA8"] = df_75m["Close"].ewm(span=8, adjust=False).mean()
         df_75m["EMA21"] = df_75m["Close"].ewm(span=21, adjust=False).mean()
         df_75m["SMA50"] = df_75m["Close"].rolling(50, min_periods=20).mean()
-        df_75m["SMA150"] = df_75m["Close"].rolling(150, min_periods=50).mean()
-        df_75m["SMA200"] = df_75m["Close"].rolling(200, min_periods=80).mean()
         df_75m["VolSMA20"] = df_75m["Volume"].rolling(20).mean()
         df_75m["SwingHigh"] = df_75m["High"].shift(1).rolling(swing_high_lookback).max()
         df_75m = compute_elder_impulse(df_75m)
@@ -346,10 +391,8 @@ def scan_elder_impulse_75min(
         prior_sub = merged.iloc[:-1]
 
         # ---------------------------------------------------------
-        # Strategy Rules Verification
+        # 1. Base Setup Verification (Watchlist Level)
         # ---------------------------------------------------------
-
-        # 1. Higher Timeframe (Daily): Close > EMA8 > EMA21 > SMA50 > SMA150 > SMA200
         c_daily_prereq = (
             curr["Close"] > curr["EMA8_D"]
             and curr["EMA8_D"] > curr["EMA21_D"]
@@ -358,77 +401,64 @@ def scan_elder_impulse_75min(
             and curr["SMA150_D"] > curr["SMA200_D"]
         )
 
-        # 2. Lower Timeframe (75-Minute): Close > SMA50 > SMA150 > SMA200
-        # If SMA200 / SMA150 have not fully formed, evaluate on available periods
-        c_75m_stack = curr["Close"] > curr["SMA50"]
-        if not pd.isna(curr["SMA150"]):
-            c_75m_stack = c_75m_stack and (curr["SMA50"] > curr["SMA150"])
-        if not pd.isna(curr["SMA200"]):
-            c_75m_stack = c_75m_stack and (curr["SMA150"] > curr["SMA200"])
+        c_75m_trend = not pd.isna(curr["SMA50"]) and (curr["Close"] > curr["SMA50"])
 
-        if not (c_daily_prereq and c_75m_stack):
-            continue
+        # Touching 8 EMA (with a 0.5% tolerance buffer)
+        c_touch_8ema = curr["Low"] <= (curr["EMA8"] * 1.005)
 
-        # 3. Bar Touches 8 EMA on 75m bar
-        if not (curr["Low"] <= curr["EMA8"] <= curr["High"]):
-            continue
-
-        # 4. Elder Impulse is GREEN
-        if curr["Impulse_Color"] != "GREEN":
-            continue
-
-        # 5. Volume >= volume_factor * 20 VolSMA
-        if pd.isna(curr["VolSMA20"]) or curr["Volume"] < (
-            volume_factor * curr["VolSMA20"]
-        ):
-            continue
-
-        # 6. Timing Sequence: >=3 Greens, >=1 Blue, >=1 Red in prior 14 days
-        if not check_timing_sequence(prior_sub, max_days=14):
-            continue
-
-        # 7. Breakout Level Proximity & Above PrevWeek High
+        # Proximity within swing tolerance
         swing_high = curr["SwingHigh"]
         min_entry_level = swing_high * (1.0 - swing_high_tolerance_pct)
-        c_near_swing_high = (curr["Close"] >= min_entry_level) and (
-            curr["Close"] < swing_high
-        )
-        c_above_pwh = (
-            curr["Close"] > curr["PrevWeek_High"]
-            if not pd.isna(curr["PrevWeek_High"])
-            else True
-        )
+        c_near_swing_high = curr["Close"] >= min_entry_level
 
-        if not (c_near_swing_high and c_above_pwh):
+        if not (c_daily_prereq and c_75m_trend and c_touch_8ema and c_near_swing_high):
             continue
 
-        # Signal Output Calculation
         entry_price = float(curr["Close"])
         initial_stop = float(curr["Low"])
-        risk_per_share = round(entry_price - initial_stop, 2)
-
-        candidates.append(
-            {
-                "symbol": sym,
-                "signal_timestamp": str(merged.index[-1]),
-                "entry_price": round(entry_price, 2),
-                "initial_stop": round(initial_stop, 2),
-                "risk_per_share": risk_per_share,
-                "target_1to1": round(entry_price + risk_per_share, 2),
-                "market_regime": market_regime,
-                "swing_high": round(float(swing_high), 2),
-                "volume_ratio": round(float(curr["Volume"] / curr["VolSMA20"]), 2),
-            }
+        risk_per_share = round(max(entry_price - initial_stop, entry_price * 0.015), 2)
+        vol_ratio = (
+            round(float(curr["Volume"] / curr["VolSMA20"]), 2)
+            if not pd.isna(curr["VolSMA20"]) and curr["VolSMA20"] > 0
+            else 1.0
         )
 
-    logger.info(f"✨ Scanner found {len(candidates)} buy signal(s).")
-    return candidates
+        candidate_record = {
+            "symbol": sym,
+            "signal_timestamp": str(merged.index[-1]),
+            "entry_price": round(entry_price, 2),
+            "initial_stop": round(initial_stop, 2),
+            "risk_per_share": risk_per_share,
+            "target_1to1": round(entry_price + risk_per_share, 2),
+            "market_regime": market_regime,
+            "swing_high": round(float(swing_high), 2),
+            "volume_ratio": vol_ratio,
+            "color": curr["Impulse_Color"],
+        }
+
+        # ---------------------------------------------------------
+        # 2. Trigger Check (Buy Today vs. Watchlist)
+        # ---------------------------------------------------------
+        is_green = curr["Impulse_Color"] == "GREEN"
+        has_volume = vol_ratio >= volume_factor
+        has_sequence = check_timing_sequence(prior_sub, max_days=14)
+
+        if is_green and has_volume and has_sequence:
+            buy_today.append(candidate_record)
+        else:
+            watchlist.append(candidate_record)
+
+    logger.info(
+        f"✨ Scanner complete: {len(buy_today)} trigger(s), {len(watchlist)} watchlist setup(s)."
+    )
+    return buy_today, watchlist
 
 
 if __name__ == "__main__":
-    csv_file = "C:/Work/signaldesk/data/elder_input_us_stocks.csv"
-    results = scan_elder_impulse_75min(market="US", csv_path=csv_file)
-    if results:
-        print(pd.DataFrame(results).to_string(index=False))
-    else:
-        print("No candidates currently triggered.")
+    buys, watch = scan_elder_impulse_75min(market="US")
+    print(f"\n--- TRIGGERED BUYS ({len(buys)}) ---")
+    if buys:
+        print(pd.DataFrame(buys).to_string(index=False))
+    print(f"\n--- ACTIONABLE 75M WATCHLIST ({len(watch)}) ---")
+    if watch:
+        print(pd.DataFrame(watch).to_string(index=False))

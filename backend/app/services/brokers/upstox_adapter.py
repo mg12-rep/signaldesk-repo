@@ -327,6 +327,34 @@ class UpstoxAdapter(BaseBrokerAdapter):
         response = self._execute_request_with_retry("POST", url, json_data=payload)
         return response.json() if response else {"status": "error", "message": "Failed"}
 
+    def fetch_intraday_candles(
+        self, instrument_key: str, interval: str = "15minute"
+    ) -> pd.DataFrame:
+        """Fetches today's live/completed intraday bars from Upstox V3."""
+        # Upstox V3 URL format for 15-minute intraday:
+        url = f"https://api.upstox.com/v3/historical-candle/intraday/{instrument_key}/minutes/15"
+        response = self._execute_request_with_retry("GET", url)
+        if not response or response.status_code != 200:
+            return pd.DataFrame()
+
+        candles = response.json().get("data", {}).get("candles", [])
+        if not candles:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(
+            candles,
+            columns=["timestamp", "open", "high", "low", "close", "volume", "oi"],
+        )
+        df["ts"] = pd.to_datetime(df["timestamp"])
+        if df["ts"].dt.tz is None:
+            df["ts"] = df["ts"].dt.tz_localize("Asia/Kolkata").dt.tz_convert("UTC")
+        else:
+            df["ts"] = df["ts"].dt.tz_convert("UTC")
+
+        return df[["ts", "open", "high", "low", "close", "volume"]].drop_duplicates(
+            subset=["ts"]
+        )
+
     def fetch_historical_candles(
         self,
         instrument_key: str,
@@ -335,8 +363,8 @@ class UpstoxAdapter(BaseBrokerAdapter):
     ) -> pd.DataFrame:
         """
         Fetches historical candles for 'day' or '15minute'.
-        Uses Upstox V3 for 15m (chunked into 30-day windows) and V2 for daily.
-        Converts timestamps to UTC for TIMESTAMPTZ database storage.
+        For 15m, queries Upstox historical V3 chunks AND combines with the current day's intraday bars.
+        Converts all timestamps to UTC for TIMESTAMPTZ storage.
         """
         if interval == "day":
             return self.fetch_historical_daily(instrument_key, days=days)
@@ -362,23 +390,38 @@ class UpstoxAdapter(BaseBrokerAdapter):
             curr_end = curr_start - timedelta(days=1)
             time.sleep(0.3)
 
-        if not all_candles:
+        frames = []
+
+        # 1. Historical chunked bars
+        if all_candles:
+            df_hist = pd.DataFrame(
+                all_candles,
+                columns=["timestamp", "open", "high", "low", "close", "volume", "oi"],
+            )
+            df_hist["ts"] = pd.to_datetime(df_hist["timestamp"])
+            if df_hist["ts"].dt.tz is None:
+                df_hist["ts"] = (
+                    df_hist["ts"].dt.tz_localize("Asia/Kolkata").dt.tz_convert("UTC")
+                )
+            else:
+                df_hist["ts"] = df_hist["ts"].dt.tz_convert("UTC")
+            frames.append(df_hist[["ts", "open", "high", "low", "close", "volume"]])
+
+        # 2. Today's intraday bars
+        try:
+            df_intra = self.fetch_intraday_candles(instrument_key, interval="15minute")
+            if not df_intra.empty:
+                frames.append(df_intra)
+        except Exception as e:
+            logger.warning(
+                f"Could not fetch today's intraday candles for {instrument_key}: {e}"
+            )
+
+        if not frames:
             return pd.DataFrame()
 
-        df = pd.DataFrame(
-            all_candles,
-            columns=["timestamp", "open", "high", "low", "close", "volume", "oi"],
-        )
-        df["ts"] = pd.to_datetime(df["timestamp"])
-
-        # Ensure timestamps are converted to UTC for TIMESTAMPTZ column
-        if df["ts"].dt.tz is None:
-            df["ts"] = df["ts"].dt.tz_localize("Asia/Kolkata").dt.tz_convert("UTC")
-        else:
-            df["ts"] = df["ts"].dt.tz_convert("UTC")
-
         df = (
-            df[["ts", "open", "high", "low", "close", "volume"]]
+            pd.concat(frames, ignore_index=True)
             .drop_duplicates(subset=["ts"])
             .sort_values("ts")
         )

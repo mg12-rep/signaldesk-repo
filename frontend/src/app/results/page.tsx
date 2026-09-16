@@ -5,13 +5,13 @@ import { useSearchParams, useRouter } from "next/navigation";
 import {
   ArrowLeft,
   RefreshCw,
-  ShieldCheck,
   AlertTriangle,
   Eye,
   Send,
   Zap,
-  TrendingUp,
+  BarChart2,
 } from "lucide-react";
+import Elder75mChartModal from "@/components/Elder75mChartModal";
 
 interface SignalItem {
   status: string;
@@ -31,6 +31,7 @@ interface SignalItem {
   volume_needed?: number;
   pct_from_trigger?: number;
   base_age_days?: number;
+  stage?: string;
 }
 
 interface ScannerRunResponse {
@@ -55,6 +56,14 @@ function ResultsContent() {
     "BUY_TODAY" | "NEAR_BUYS" | "WATCHLIST"
   >("BUY_TODAY");
   const [selectedSignal, setSelectedSignal] = useState<SignalItem | null>(null);
+
+  // Modal State
+  const [chartModalSymbol, setChartModalSymbol] = useState<string | null>(null);
+
+  const market = (searchParams.get("market") || "US").toUpperCase() as
+    | "NSE"
+    | "US";
+  const currencySymbol = market === "NSE" ? "₹" : "$";
 
   const fetchSignals = async () => {
     setLoading(true);
@@ -117,7 +126,8 @@ function ResultsContent() {
               </span>
               <span
                 className={`text-[10px] font-bold px-2 py-0.5 rounded ${
-                  data?.market_status === "HEALTHY"
+                  data?.market_status === "HEALTHY" ||
+                  data?.market_status === "STRONG"
                     ? "bg-emerald-950 text-emerald-400 border border-emerald-800"
                     : "bg-rose-950 text-rose-400 border border-rose-800"
                 }`}
@@ -192,25 +202,22 @@ function ResultsContent() {
         </button>
       </div>
 
-      {/* Main Grid: Signal Table & Trade Staging */}
+      {/* Main Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Table View */}
         <div className="lg:col-span-2 bg-slate-900 border border-slate-800/80 rounded-xl overflow-hidden shadow-xl">
           <div className="overflow-x-auto">
-            {/* Replace the <table> inside page.tsx with this updated structure */}
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="border-b border-slate-800 text-[11px] font-semibold text-slate-400 uppercase tracking-wider bg-slate-950/40">
                   <th className="py-3 px-4">Ticker</th>
+                  <th className="py-3 px-2 text-center">Chart</th>
                   <th className="py-3 px-3">Close</th>
                   <th className="py-3 px-3">Trigger / Base</th>
-                  <th className="py-3 px-3">MRS Rank</th>
+                  <th className="py-3 px-3">MRS / Stage</th>
                   <th className="py-3 px-3">Dist SMA %</th>
-                  <th className="py-3 px-3 text-rose-400">Hard Stop (8%)</th>
-                  <th className="py-3 px-3 text-amber-400">
-                    Trailing SL (2×ATR)
-                  </th>
-                  <th className="py-3 px-3 text-slate-400">ATR(14W)</th>
+                  <th className="py-3 px-3 text-rose-400">Hard Stop</th>
+                  <th className="py-3 px-3 text-amber-400">Trailing Stop</th>
                   <th className="py-3 px-3 text-right">Status</th>
                 </tr>
               </thead>
@@ -221,7 +228,7 @@ function ResultsContent() {
                       colSpan={9}
                       className="py-12 text-center text-slate-500 font-mono"
                     >
-                      Scanning ETF universe...
+                      Running multi-timeframe scanner...
                     </td>
                   </tr>
                 ) : currentList.length === 0 ? (
@@ -247,43 +254,48 @@ function ResultsContent() {
                         <td className="py-3 px-4 font-bold text-white font-mono">
                           {item.ticker}
                         </td>
+                        <td className="py-3 px-2 text-center">
+                          <button
+                            title="View 75m RGB Chart"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setChartModalSymbol(item.ticker);
+                            }}
+                            className="p-1.5 rounded-md bg-slate-800 hover:bg-cyan-950 text-slate-400 hover:text-cyan-300 border border-slate-700 hover:border-cyan-700 transition"
+                          >
+                            <BarChart2 className="h-3.5 w-3.5" />
+                          </button>
+                        </td>
                         <td className="py-3 px-3 font-mono text-slate-200">
-                          ${item.close.toFixed(2)}
+                          {currencySymbol}
+                          {item.close.toFixed(2)}
                         </td>
                         <td className="py-3 px-3 font-mono text-emerald-400 font-semibold">
-                          ${item.trigger_price.toFixed(2)}
+                          {currencySymbol}
+                          {item.trigger_price.toFixed(2)}
                         </td>
-                        <td
-                          className={`py-3 px-3 font-mono font-semibold ${
-                            (item.rs_rank ?? 0) >= 0
-                              ? "text-purple-300"
-                              : "text-amber-400"
-                          }`}
-                        >
-                          {item.rs_rank !== undefined && item.rs_rank !== null
-                            ? item.rs_rank.toFixed(1)
-                            : "—"}
+                        <td className="py-3 px-3 font-mono text-purple-300">
+                          {item.stage ||
+                            (item.rs_rank !== undefined && item.rs_rank !== null
+                              ? item.rs_rank.toFixed(1)
+                              : "—")}
                         </td>
                         <td className="py-3 px-3 font-mono text-slate-400">
-                          +
-                          {item.pct_from_trigger
-                            ? item.pct_from_trigger.toFixed(1)
-                            : "0.0"}
-                          %
+                          {item.pct_from_trigger !== undefined &&
+                          item.pct_from_trigger !== null
+                            ? `${item.pct_from_trigger > 0 ? "+" : ""}${item.pct_from_trigger.toFixed(1)}%`
+                            : "0.0%"}
                         </td>
                         <td className="py-3 px-3 font-mono text-rose-400 font-semibold">
-                          $
+                          {currencySymbol}
                           {item.hard_stop
                             ? item.hard_stop.toFixed(2)
                             : (item.close * 0.92).toFixed(2)}
                         </td>
                         <td className="py-3 px-3 font-mono text-amber-400 font-semibold">
                           {item.trailing_stop
-                            ? `$${item.trailing_stop.toFixed(2)}`
+                            ? `${currencySymbol}${item.trailing_stop.toFixed(2)}`
                             : "—"}
-                        </td>
-                        <td className="py-3 px-3 font-mono text-slate-400">
-                          {item.atr14 ? `$${item.atr14.toFixed(2)}` : "—"}
                         </td>
                         <td className="py-3 px-3 text-right">
                           <span
@@ -311,31 +323,41 @@ function ResultsContent() {
             <h2 className="text-sm font-bold text-white">
               Order Staging Ticket
             </h2>
-            <span className="text-[11px] font-mono text-emerald-400">
-              {selectedSignal ? selectedSignal.ticker : "None Selected"}
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-mono text-emerald-400 font-bold">
+                {selectedSignal ? selectedSignal.ticker : "None Selected"}
+              </span>
+              {selectedSignal && (
+                <button
+                  onClick={() => setChartModalSymbol(selectedSignal.ticker)}
+                  className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300"
+                  title="Open Chart"
+                >
+                  <BarChart2 className="h-3 w-3" />
+                </button>
+              )}
+            </div>
           </div>
 
           {selectedSignal ? (
             <div className="space-y-4">
-              {/* Trigger Price Card */}
               <div className="bg-slate-950 p-2.5 rounded border border-slate-800">
                 <span className="text-slate-500 text-[10px] block">
                   Trigger Price
                 </span>
                 <span className="font-mono text-white font-bold text-sm">
-                  ${selectedSignal.trigger_price.toFixed(2)}
+                  {currencySymbol}
+                  {selectedSignal.trigger_price.toFixed(2)}
                 </span>
               </div>
 
-              {/* Stop Loss Cards: Hard Stop vs 2xATR Trailing Stop */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="bg-slate-950/70 p-3 rounded-lg border border-slate-800">
                   <div className="text-[10px] text-slate-400 uppercase tracking-wider">
-                    Hard Stop (8%)
+                    Hard Stop
                   </div>
                   <span className="font-mono text-rose-400 font-bold text-sm">
-                    $
+                    {currencySymbol}
                     {selectedSignal.hard_stop !== undefined &&
                     selectedSignal.hard_stop !== null
                       ? selectedSignal.hard_stop.toFixed(2)
@@ -345,20 +367,14 @@ function ResultsContent() {
 
                 <div className="bg-slate-950/70 p-3 rounded-lg border border-slate-800">
                   <div className="text-[10px] text-slate-400 uppercase tracking-wider">
-                    Trailing Stop (2×ATR)
+                    Trailing Stop
                   </div>
                   <span className="font-mono text-amber-400 font-bold text-sm">
                     {selectedSignal.trailing_stop !== undefined &&
                     selectedSignal.trailing_stop !== null
-                      ? `$${selectedSignal.trailing_stop.toFixed(2)}`
+                      ? `${currencySymbol}${selectedSignal.trailing_stop.toFixed(2)}`
                       : "N/A"}
                   </span>
-                  {selectedSignal.atr14 !== undefined &&
-                    selectedSignal.atr14 !== null && (
-                      <div className="text-[9px] text-slate-500 font-mono mt-0.5">
-                        ATR: ${selectedSignal.atr14.toFixed(2)}
-                      </div>
-                    )}
                 </div>
               </div>
 
@@ -377,7 +393,8 @@ function ResultsContent() {
                       Position Sizing
                     </span>
                     <span className="font-mono text-slate-200 font-bold">
-                      ₹{selectedSignal.suggested_cost?.toLocaleString()}
+                      {currencySymbol}
+                      {selectedSignal.suggested_cost?.toLocaleString()}
                     </span>
                   </div>
                 </div>
@@ -415,6 +432,16 @@ function ResultsContent() {
           )}
         </div>
       </div>
+
+      {/* 75-Minute Chart Viewer Modal */}
+      {chartModalSymbol && (
+        <Elder75mChartModal
+          symbol={chartModalSymbol}
+          market={market}
+          isOpen={!!chartModalSymbol}
+          onClose={() => setChartModalSymbol(null)}
+        />
+      )}
     </div>
   );
 }

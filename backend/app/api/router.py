@@ -5,6 +5,7 @@ from app.api.dashboard import router as dashboard_router
 # Import feature routers
 from app.api.health import router as health_router
 from app.api.holdings import router as holdings_router
+from app.api.market_data import router as market_data_router
 from app.api.orders import router as orders_router
 from app.api.scanner import router as scanner_router
 
@@ -27,6 +28,9 @@ api_router.include_router(
 api_router.include_router(holdings_router, prefix="/holdings", tags=["Holdings"])
 api_router.include_router(orders_router, prefix="/orders", tags=["Orders"])
 api_router.include_router(scanner_router, prefix="/scanner", tags=["Scanner"])
+api_router.include_router(
+    market_data_router, prefix="/market-data", tags=["Market Data"]
+)
 api_router.include_router(backtest_router, prefix="/backtest", tags=["Backtest"])
 api_router.include_router(sync_router, prefix="/sync", tags=["Data Sync"])
 api_router.include_router(dashboard_router, prefix="/dashboard", tags=["dashboard"])
