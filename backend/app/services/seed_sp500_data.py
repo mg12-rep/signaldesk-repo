@@ -138,8 +138,8 @@ def fetch_historical_bars_with_retry(
 
 def _run_sp500_sync_internal(
     host: str = "127.0.0.1",
-    port: int = 7497,
-    client_id: int = 2,
+    port: int = 4001,
+    client_id: int = 99,
     max_symbols: Optional[int] = None,
 ):
     """Executes the S&P 500 ingestion loop."""
@@ -275,8 +275,8 @@ def _persist_bars(df: pd.DataFrame, symbol_id: int, cutoff_date: date):
 
 def seed_sp500_universe(
     host: str = "127.0.0.1",
-    port: int = 7497,
-    client_id: int = 2,
+    port: int = 4001,
+    client_id: int = 99,
     max_symbols: Optional[int] = None,
 ):
     """Thread-safe entry point for FastAPI BackgroundTasks and CLI."""

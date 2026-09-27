@@ -22,7 +22,7 @@ from app.backtest.enhanced_minervini_config import load_config
 from app.screeners.elder_scanner_75min import (
     compute_elder_impulse,
     engine,
-    resample_15m_to_75m,
+    resample_5m_to_75m,
     scan_elder_impulse_75min,
 )
 from app.screeners.weinstein_screener import run_weinstein_etf_screener
@@ -97,14 +97,14 @@ def run_scanner_pipeline(
             df_raw = pd.read_sql(
                 text("""
                     SELECT ts, open, high, low, close, volume
-                    FROM market_data_eod_15min
+                    FROM market_data_eod_5min
                     WHERE symbol_id = (SELECT id FROM symbols WHERE UPPER(trading_symbol) = 'BHEL' LIMIT 1)
                     ORDER BY ts ASC;
                 """),
                 conn,
             )
 
-        df_75m = resample_15m_to_75m(df_raw, tz="Asia/Kolkata")
+        df_75m = resample_5m_to_75m(df_raw, tz="Asia/Kolkata")
         print(df_75m.tail(10))
         #########################delete
 

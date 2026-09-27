@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
 load_dotenv()
-logger = logging.getLogger("elder_scanner_75min")
+logger = logging.getLogger("elder_scanner")
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 )
@@ -22,12 +22,12 @@ engine = create_engine(sync_db_url, pool_size=5, max_overflow=5)
 
 
 # -------------------------------------------------------------------------
-# Indicators & Aggregation Helpers
+# Indicators & Resampling Helpers
 # -------------------------------------------------------------------------
 
 
 def compute_elder_impulse(df: pd.DataFrame) -> pd.DataFrame:
-    """Calculates Alexander Elder's Impulse System (13 EMA + MACD Histogram 12, 26, 9)[cite: 8]."""
+    """Calculates Alexander Elder's Impulse System (13 EMA + MACD Histogram 12, 26, 9)[cite: 1]."""
     df["EMA13"] = df["Close"].ewm(span=13, adjust=False).mean()
     df["EMA13_Slope"] = df["EMA13"] - df["EMA13"].shift(1)
 
@@ -48,7 +48,7 @@ def compute_elder_impulse(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def resample_daily_to_weekly(daily_df: pd.DataFrame) -> pd.DataFrame:
-    """Resamples daily bars to Friday-anchored weekly candles with PrevWeek High[cite: 8]."""
+    """Resamples daily bars to Friday-anchored weekly candles with PrevWeek High[cite: 1]."""
     df = daily_df.copy().sort_values("Date").drop_duplicates(subset=["Date"])
     df = df.set_index("Date")
     weekly = (
@@ -69,16 +69,16 @@ def resample_daily_to_weekly(daily_df: pd.DataFrame) -> pd.DataFrame:
     return weekly
 
 
-def resample_15m_to_75m(
+def resample_5m_to_75m(
     intraday_df: pd.DataFrame, tz: str = "Asia/Kolkata"
 ) -> pd.DataFrame:
     """
-    Groups intraday 15m bars into the 5 standard daily 75m bars:
-    - Bar 1: 09:15 - 10:30
-    - Bar 2: 10:30 - 11:45
-    - Bar 3: 11:45 - 13:00
-    - Bar 4: 13:00 - 14:15
-    - Bar 5: 14:15 - 15:30
+    Groups intraday 5m bars into the 5 standard daily 75m bars for NSE (375 min total):
+    - Bar 1: 09:15 - 10:30 (15 bars)
+    - Bar 2: 10:30 - 11:45 (15 bars)
+    - Bar 3: 11:45 - 13:00 (15 bars)
+    - Bar 4: 13:00 - 14:15 (15 bars)
+    - Bar 5: 14:15 - 15:30 (15 bars)
     """
     df = intraday_df.copy().sort_values("ts").drop_duplicates(subset=["ts"])
     df["Date"] = pd.to_datetime(df["ts"])
@@ -88,51 +88,34 @@ def resample_15m_to_75m(
     else:
         df["Date"] = df["Date"].dt.tz_convert(tz)
 
-    # Map each 15m bar start time to its 75m parent anchor
-    session_map = {
-        # Bar 1 (09:15 - 10:30)
-        "09:15": "09:15",
-        "09:30": "09:15",
-        "09:45": "09:15",
-        "10:00": "09:15",
-        "10:15": "09:15",
-        # Bar 2 (10:30 - 11:45)
-        "10:30": "10:30",
-        "10:45": "10:30",
-        "11:00": "10:30",
-        "11:15": "10:30",
-        "11:30": "10:30",
-        # Bar 3 (11:45 - 13:00)
-        "11:45": "11:45",
-        "12:00": "11:45",
-        "12:15": "11:45",
-        "12:30": "11:45",
-        "12:45": "11:45",
-        # Bar 4 (13:00 - 14:15)
-        "13:00": "13:00",
-        "13:15": "13:00",
-        "13:30": "13:00",
-        "13:45": "13:00",
-        "14:00": "13:00",
-        # Bar 5 (14:15 - 15:30)
-        "14:15": "14:15",
-        "14:30": "14:15",
-        "14:45": "14:15",
-        "15:00": "14:15",
-        "15:15": "14:15",
-    }
+    session_map = {}
+    bar_starts = [
+        ("09:15", "10:30", "09:15"),
+        ("10:30", "11:45", "10:30"),
+        ("11:45", "13:00", "11:45"),
+        ("13:00", "14:15", "13:00"),
+        ("14:15", "15:30", "14:15"),
+    ]
+    for start_t, end_t, anchor in bar_starts:
+        times = pd.date_range(
+            f"2026-01-01 {start_t}",
+            f"2026-01-01 {end_t}",
+            freq="5min",
+            inclusive="left",
+        )
+        for t in times:
+            session_map[t.strftime("%H:%M")] = anchor
 
     df["time_str"] = df["Date"].dt.strftime("%H:%M")
     df["anchor_time"] = df["time_str"].map(session_map)
     df = df.dropna(subset=["anchor_time"]).copy()
 
-    # Construct the exact 75m candle timestamp: Date + Anchor Time
-    df["bar_75m_dt"] = pd.to_datetime(
+    df["bar_agg_dt"] = pd.to_datetime(
         df["Date"].dt.strftime("%Y-%m-%d") + " " + df["anchor_time"]
     ).dt.tz_localize(tz)
 
     resampled = (
-        df.groupby("bar_75m_dt")
+        df.groupby("bar_agg_dt")
         .agg(
             open=("open", "first"),
             high=("high", "max"),
@@ -145,7 +128,7 @@ def resample_15m_to_75m(
 
     resampled.rename(
         columns={
-            "bar_75m_dt": "Date",
+            "bar_agg_dt": "Date",
             "open": "Open",
             "high": "High",
             "low": "Low",
@@ -157,32 +140,77 @@ def resample_15m_to_75m(
     return resampled.sort_values("Date")
 
 
-def check_timing_sequence(sub_df: pd.DataFrame, max_days: int = 14) -> bool:
-    """Requires >= 3 Greens, >= 1 Blue, and >= 1 Red within the prior 14 days[cite: 8]."""
-    if sub_df.empty or len(sub_df) < 5:
-        return False
+def resample_5m_to_65m(
+    intraday_df: pd.DataFrame, tz: str = "America/New_York"
+) -> pd.DataFrame:
+    """
+    Groups intraday 5m bars into the 6 standard daily 65m bars for US Equities (390 min total):
+    - Bar 1: 09:30 - 10:35 (13 bars)
+    - Bar 2: 10:35 - 11:40 (13 bars)
+    - Bar 3: 11:40 - 12:45 (13 bars)
+    - Bar 4: 12:45 - 13:50 (13 bars)
+    - Bar 5: 13:50 - 14:55 (13 bars)
+    - Bar 6: 14:55 - 16:00 (13 bars)
+    """
+    df = intraday_df.copy().sort_values("ts").drop_duplicates(subset=["ts"])
+    df["Date"] = pd.to_datetime(df["ts"])
 
-    last_dt = (
-        sub_df.index[-1]
-        if isinstance(sub_df.index, pd.DatetimeIndex)
-        else pd.to_datetime(sub_df["Date"].iloc[-1])
-    )
-    cutoff_date = last_dt - timedelta(days=max_days)
-
-    if isinstance(sub_df.index, pd.DatetimeIndex):
-        window = sub_df.loc[cutoff_date:]
+    if df["Date"].dt.tz is None:
+        df["Date"] = df["Date"].dt.tz_localize("UTC").dt.tz_convert(tz)
     else:
-        window = sub_df[sub_df["Date"] >= cutoff_date]
+        df["Date"] = df["Date"].dt.tz_convert(tz)
 
-    if window.empty:
-        return False
+    session_map = {}
+    bar_starts = [
+        ("09:30", "10:35", "09:30"),
+        ("10:35", "11:40", "10:35"),
+        ("11:40", "12:45", "11:40"),
+        ("12:45", "13:50", "12:45"),
+        ("13:50", "14:55", "13:50"),
+        ("14:55", "16:00", "14:55"),
+    ]
+    for start_t, end_t, anchor in bar_starts:
+        times = pd.date_range(
+            f"2026-01-01 {start_t}",
+            f"2026-01-01 {end_t}",
+            freq="5min",
+            inclusive="left",
+        )
+        for t in times:
+            session_map[t.strftime("%H:%M")] = anchor
 
-    colors = window["Impulse_Color"].tolist()
-    return (
-        (colors.count("GREEN") >= 3)
-        and (colors.count("BLUE") >= 1)
-        and (colors.count("RED") >= 1)
+    df["time_str"] = df["Date"].dt.strftime("%H:%M")
+    df["anchor_time"] = df["time_str"].map(session_map)
+    df = df.dropna(subset=["anchor_time"]).copy()
+
+    df["bar_agg_dt"] = pd.to_datetime(
+        df["Date"].dt.strftime("%Y-%m-%d") + " " + df["anchor_time"]
+    ).dt.tz_localize(tz)
+
+    resampled = (
+        df.groupby("bar_agg_dt")
+        .agg(
+            open=("open", "first"),
+            high=("high", "max"),
+            low=("low", "min"),
+            close=("close", "last"),
+            volume=("volume", "sum"),
+        )
+        .reset_index()
     )
+
+    resampled.rename(
+        columns={
+            "bar_agg_dt": "Date",
+            "open": "Open",
+            "high": "High",
+            "low": "Low",
+            "close": "Close",
+            "volume": "Volume",
+        },
+        inplace=True,
+    )
+    return resampled.sort_values("Date")
 
 
 # -------------------------------------------------------------------------
@@ -191,7 +219,7 @@ def check_timing_sequence(sub_df: pd.DataFrame, max_days: int = 14) -> bool:
 
 
 def get_current_market_regime(market: str = "NSE") -> str:
-    """Checks whether the market benchmark is STRONG or WEAK[cite: 8]."""
+    """Checks whether the market benchmark is STRONG or WEAK[cite: 1]."""
     benchmark_id = 2 if market == "NSE" else 5201
     query = text("""
         SELECT date AS "Date", close AS "Close"
@@ -223,26 +251,26 @@ def get_current_market_regime(market: str = "NSE") -> str:
 # -------------------------------------------------------------------------
 
 
-def scan_elder_impulse_75min(
+def scan_elder_impulse(
     market: str = "NSE",
     csv_path: Optional[str] = None,
     swing_high_lookback: int = 20,
-    swing_high_tolerance_pct: float = 0.05,
     volume_factor: float = 1.0,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
-    Scans stocks and returns (buy_today, watchlist) candidates.
-    - watchlist: Satisfies macro daily trend, 75m Close > SMA50, 8 EMA touch, and swing proximity.
-    - buy_today: Also triggers GREEN impulse with expanding volume.
+    Scans stocks and returns setup candidates based on pure cascading moving average trends:
+    1. Daily: Close > EMA8_D > EMA21_D > SMA50_D > SMA150_D > SMA200_D
+    2. Intraday (75m for NSE, 65m for US): SMA50 > SMA150 > SMA200
     """
     market_upper = market.upper().strip()
-    tz = "America/New_York" if market_upper == "US" else "Asia/Kolkata"
+    is_us = market_upper == "US"
+    tz = "America/New_York" if is_us else "Asia/Kolkata"
     market_regime = get_current_market_regime(market_upper)
 
     if not csv_path:
         csv_path = (
             "C:/Work/signaldesk/data/elder_input_us_stocks.csv"
-            if market_upper == "US"
+            if is_us
             else "C:/Work/signaldesk/data/elder_input_nse_stocks.csv"
         )
 
@@ -276,14 +304,15 @@ def scan_elder_impulse_75min(
         logger.info(f"Loaded {len(filter_symbols)} tickers from CSV: {csv_path}")
     else:
         logger.warning(
-            f"CSV path {csv_path} not found. Scanning all symbols in 15m table."
+            f"CSV path {csv_path} not found. Scanning all symbols in 5m table."
         )
 
+    # Query targeting market_data_eod_5min
     if filter_symbols:
         symbols_q = text("""
             SELECT DISTINCT s.id, s.trading_symbol
             FROM symbols s
-            JOIN market_data_eod_15min m ON s.id = m.symbol_id
+            JOIN market_data_eod_5min m ON s.id = m.symbol_id
             WHERE s.is_active = TRUE AND UPPER(s.trading_symbol) = ANY(:tickers)
             ORDER BY s.trading_symbol;
         """)
@@ -292,7 +321,7 @@ def scan_elder_impulse_75min(
         symbols_q = text("""
             SELECT DISTINCT s.id, s.trading_symbol
             FROM symbols s
-            JOIN market_data_eod_15min m ON s.id = m.symbol_id
+            JOIN market_data_eod_5min m ON s.id = m.symbol_id
             WHERE s.is_active = TRUE
             ORDER BY s.trading_symbol;
         """)
@@ -302,7 +331,7 @@ def scan_elder_impulse_75min(
         symbols = conn.execute(symbols_q, params).fetchall()
 
     logger.info(
-        f"🔍 Running 75m Elder Impulse Scanner on {len(symbols)} symbols ({market_upper} Regime: {market_regime})..."
+        f"🔍 Running trend scanner on {len(symbols)} symbols ({market_upper} Regime: {market_regime})..."
     )
 
     buy_today: List[Dict[str, Any]] = []
@@ -318,7 +347,7 @@ def scan_elder_impulse_75min(
         """)
         intra_q = text("""
             SELECT ts, open, high, low, close, volume
-            FROM market_data_eod_15min
+            FROM market_data_eod_5min
             WHERE symbol_id = :sid
             ORDER BY ts ASC;
         """)
@@ -327,10 +356,10 @@ def scan_elder_impulse_75min(
             daily_df = pd.read_sql(daily_q, conn, params={"sid": sid})
             intra_df = pd.read_sql(intra_q, conn, params={"sid": sid})
 
-        if len(daily_df) < 200 or len(intra_df) < 25:
+        if len(daily_df) < 200 or len(intra_df) < 50:
             continue
 
-        # Prepare Higher Timeframe (Daily) anchors
+        # Prepare Daily anchors
         daily_df["Date"] = pd.to_datetime(daily_df["Date"])
         weekly_df = resample_daily_to_weekly(daily_df)
 
@@ -347,22 +376,40 @@ def scan_elder_impulse_75min(
             direction="backward",
         )
 
-        # Resample 15m to 75m
-        df_75m = resample_15m_to_75m(intra_df, tz=tz)
-        if len(df_75m) < 25:
+        # Dynamic Intraday Resample (65m for US, 75m for NSE)
+        if is_us:
+            df_intra_resampled = resample_5m_to_65m(intra_df, tz=tz)
+        else:
+            df_intra_resampled = resample_5m_to_75m(intra_df, tz=tz)
+
+        if len(df_intra_resampled) < 25:
             continue
 
-        df_75m["EMA8"] = df_75m["Close"].ewm(span=8, adjust=False).mean()
-        df_75m["EMA21"] = df_75m["Close"].ewm(span=21, adjust=False).mean()
-        df_75m["SMA50"] = df_75m["Close"].rolling(50, min_periods=20).mean()
-        df_75m["VolSMA20"] = df_75m["Volume"].rolling(20).mean()
-        df_75m["SwingHigh"] = df_75m["High"].shift(1).rolling(swing_high_lookback).max()
-        df_75m = compute_elder_impulse(df_75m)
+        df_intra_resampled["EMA8"] = (
+            df_intra_resampled["Close"].ewm(span=8, adjust=False).mean()
+        )
+        df_intra_resampled["EMA21"] = (
+            df_intra_resampled["Close"].ewm(span=21, adjust=False).mean()
+        )
+        df_intra_resampled["SMA50"] = (
+            df_intra_resampled["Close"].rolling(50, min_periods=20).mean()
+        )
+        df_intra_resampled["SMA150"] = (
+            df_intra_resampled["Close"].rolling(150, min_periods=50).mean()
+        )
+        df_intra_resampled["SMA200"] = (
+            df_intra_resampled["Close"].rolling(200, min_periods=50).mean()
+        )
+        df_intra_resampled["VolSMA20"] = df_intra_resampled["Volume"].rolling(20).mean()
+        df_intra_resampled["SwingHigh"] = (
+            df_intra_resampled["High"].shift(1).rolling(swing_high_lookback).max()
+        )
+        df_intra_resampled = compute_elder_impulse(df_intra_resampled)
 
-        # Align timestamp precision and timezone for merge_asof
-        df_75m_merge = df_75m.sort_values("Date").copy()
-        df_75m_merge["Date"] = pd.to_datetime(
-            df_75m_merge["Date"].dt.tz_localize(None)
+        # Align timestamps for merge_asof
+        df_intra_merge = df_intra_resampled.sort_values("Date").copy()
+        df_intra_merge["Date"] = pd.to_datetime(
+            df_intra_merge["Date"].dt.tz_localize(None)
         ).astype("datetime64[ns]")
 
         daily_prep_merge = daily_prep.sort_values("Date").copy()
@@ -371,7 +418,7 @@ def scan_elder_impulse_75min(
         ).astype("datetime64[ns]")
 
         merged = pd.merge_asof(
-            df_75m_merge,
+            df_intra_merge,
             daily_prep_merge[
                 [
                     "Date",
@@ -388,12 +435,12 @@ def scan_elder_impulse_75min(
         ).set_index("Date")
 
         curr = merged.iloc[-1]
-        prior_sub = merged.iloc[:-1]
 
         # ---------------------------------------------------------
-        # 1. Base Setup Verification (Watchlist Level)
+        # 1. Condition 1: Daily Cascading Trend
+        # Close > EMA8_D > EMA21_D > SMA50_D > SMA150_D > SMA200_D
         # ---------------------------------------------------------
-        c_daily_prereq = (
+        c_daily_trend = (
             curr["Close"] > curr["EMA8_D"]
             and curr["EMA8_D"] > curr["EMA21_D"]
             and curr["EMA21_D"] > curr["SMA50_D"]
@@ -401,17 +448,18 @@ def scan_elder_impulse_75min(
             and curr["SMA150_D"] > curr["SMA200_D"]
         )
 
-        c_75m_trend = not pd.isna(curr["SMA50"]) and (curr["Close"] > curr["SMA50"])
+        # ---------------------------------------------------------
+        # 2. Condition 2: Intraday Cascading Trend (65m or 75m)
+        # SMA50 > SMA150 > SMA200
+        # ---------------------------------------------------------
+        c_intra_trend = (
+            not pd.isna(curr["SMA50"])
+            and not pd.isna(curr["SMA150"])
+            and not pd.isna(curr["SMA200"])
+            and (curr["SMA50"] > curr["SMA150"] > curr["SMA200"])
+        )
 
-        # Touching 8 EMA (with a 0.5% tolerance buffer)
-        c_touch_8ema = curr["Low"] <= (curr["EMA8"] * 1.005)
-
-        # Proximity within swing tolerance
-        swing_high = curr["SwingHigh"]
-        min_entry_level = swing_high * (1.0 - swing_high_tolerance_pct)
-        c_near_swing_high = curr["Close"] >= min_entry_level
-
-        if not (c_daily_prereq and c_75m_trend and c_touch_8ema and c_near_swing_high):
+        if not (c_daily_trend and c_intra_trend):
             continue
 
         entry_price = float(curr["Close"])
@@ -431,34 +479,28 @@ def scan_elder_impulse_75min(
             "risk_per_share": risk_per_share,
             "target_1to1": round(entry_price + risk_per_share, 2),
             "market_regime": market_regime,
-            "swing_high": round(float(swing_high), 2),
+            "swing_high": (
+                round(float(curr["SwingHigh"]), 2)
+                if not pd.isna(curr["SwingHigh"])
+                else round(entry_price, 2)
+            ),
             "volume_ratio": vol_ratio,
             "color": curr["Impulse_Color"],
         }
 
-        # ---------------------------------------------------------
-        # 2. Trigger Check (Buy Today vs. Watchlist)
-        # ---------------------------------------------------------
-        is_green = curr["Impulse_Color"] == "GREEN"
-        has_volume = vol_ratio >= volume_factor
-        has_sequence = check_timing_sequence(prior_sub, max_days=14)
-
-        if is_green and has_volume and has_sequence:
-            buy_today.append(candidate_record)
-        else:
-            watchlist.append(candidate_record)
+        buy_today.append(candidate_record)
 
     logger.info(
-        f"✨ Scanner complete: {len(buy_today)} trigger(s), {len(watchlist)} watchlist setup(s)."
+        f"✨ Scanner complete: {len(buy_today)} setup(s) meeting dual cascading criteria."
     )
     return buy_today, watchlist
 
 
+# Backward compatibility alias
+scan_elder_impulse_75min = scan_elder_impulse
+
 if __name__ == "__main__":
-    buys, watch = scan_elder_impulse_75min(market="US")
-    print(f"\n--- TRIGGERED BUYS ({len(buys)}) ---")
+    buys, _ = scan_elder_impulse(market="NSE")
+    print(f"\n--- QUALIFIED TREND SETUPS ({len(buys)}) ---")
     if buys:
         print(pd.DataFrame(buys).to_string(index=False))
-    print(f"\n--- ACTIONABLE 75M WATCHLIST ({len(watch)}) ---")
-    if watch:
-        print(pd.DataFrame(watch).to_string(index=False))

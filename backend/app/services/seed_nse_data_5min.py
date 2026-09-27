@@ -10,7 +10,7 @@ from app.services.brokers.upstox_adapter import upstox_adapter
 from app.services.upstox_instruments import upstox_instruments
 from sqlalchemy import create_engine, text
 
-logger = logging.getLogger("ingest_15min_data")
+logger = logging.getLogger("ingest_5min_data")
 
 sync_db_url = os.getenv("DATABASE_URL", "").replace(
     "postgresql+asyncpg://", "postgresql+psycopg2://"
@@ -20,20 +20,19 @@ engine = create_engine(sync_db_url, pool_size=5, max_overflow=5)
 IST_OFFSET = timezone(timedelta(hours=5, minutes=30))
 
 
-def run_15min_ingestion_pipeline(
+def run_5min_ingestion_pipeline(
     csv_path: Optional[str] = None,
-    days: int = 90,
+    days: int = 60,
     default_lookback_days: Optional[int] = None,
 ):
     """
-    Reads pre-selected NSE symbols from CSV and syncs 15-minute bars.
+    Reads pre-selected NSE symbols from CSV and syncs 5-minute bars.
     Automatically switches between a full seed and a delta fetch based on DB state.
-    Accepts both 'days' and 'default_lookback_days' to prevent parameter mismatch.
     """
     lookback = default_lookback_days if default_lookback_days is not None else days
 
     if not csv_path:
-        csv_path = "data/selected_stocks.csv"
+        csv_path = "C:/Work/signaldesk/data/selected_stocks.csv"
 
     file_path = Path(csv_path)
     if not file_path.exists():
@@ -66,10 +65,10 @@ def run_15min_ingestion_pipeline(
         .tolist()
     )
 
-    logger.info(f"🚀 Starting 15-minute delta sync for {len(symbols)} symbols...")
+    logger.info(f"🚀 Starting 5-minute delta sync for {len(symbols)} symbols...")
 
     upsert_stmt = text("""
-        INSERT INTO market_data_eod_15min (symbol_id, ts, open, high, low, close, volume)
+        INSERT INTO market_data_eod_5min (symbol_id, ts, open, high, low, close, volume)
         VALUES (:symbol_id, :ts, :open, :high, :low, :close, :volume)
         ON CONFLICT (symbol_id, ts) DO UPDATE SET
             open = EXCLUDED.open,
@@ -111,7 +110,7 @@ def run_15min_ingestion_pipeline(
             # 2. Inspect latest available timestamp in DB for delta calculation
             latest_ts = conn.execute(
                 text(
-                    "SELECT MAX(ts) FROM market_data_eod_15min WHERE symbol_id = :sid;"
+                    "SELECT MAX(ts) FROM market_data_eod_5min WHERE symbol_id = :sid;"
                 ),
                 {"sid": symbol_id},
             ).scalar()
@@ -122,18 +121,17 @@ def run_15min_ingestion_pipeline(
                     f"[{idx}/{len(symbols)}] Seeding initial {fetch_days}d for {sym}..."
                 )
             else:
-                # Ensure latest_ts is timezone-aware UTC
                 if latest_ts.tzinfo is None:
                     latest_ts = latest_ts.replace(tzinfo=timezone.utc)
 
                 latest_ist = latest_ts.astimezone(IST_OFFSET)
                 latest_ist_date = latest_ist.date()
 
-                # If we already have today's final closing bar (09:45 UTC / 15:15 IST), skip
+                # If we already have today's final closing bar (09:55 UTC / 15:25 IST), skip
                 if (
                     latest_ist_date == today_ist_date
                     and latest_ist.time().hour >= 15
-                    and latest_ist.time().minute >= 15
+                    and latest_ist.time().minute >= 25
                 ):
                     skipped_count += 1
                     logger.info(
@@ -141,7 +139,6 @@ def run_15min_ingestion_pipeline(
                     )
                     continue
 
-                # Fetch missing calendar days plus 1 buffer day for reconciliation
                 calendar_days_missing = (today_ist_date - latest_ist_date).days
                 fetch_days = min(max(calendar_days_missing + 1, 2), lookback)
                 logger.info(
@@ -158,21 +155,20 @@ def run_15min_ingestion_pipeline(
                 continue
 
             try:
-                # 4. Fetch candles for calculated window
+                # 4. Fetch 5-minute candles
                 df_bars = upstox_adapter.fetch_historical_candles(
                     instrument_key=instrument_key,
-                    interval="15minute",
+                    interval="5minute",
                     days=fetch_days,
                 )
 
                 if df_bars.empty:
                     logger.warning(
-                        f"[{idx}/{len(symbols)}] ⚠️ No 15m data returned for {sym}"
+                        f"[{idx}/{len(symbols)}] ⚠️ No 5m data returned for {sym}"
                     )
                     failed_count += 1
                     continue
 
-                # Filter only new or updated bars if latest_ts exists
                 if latest_ts is not None:
                     df_bars = df_bars[df_bars["ts"] >= latest_ts]
 
@@ -183,7 +179,6 @@ def run_15min_ingestion_pipeline(
                 df_bars["symbol_id"] = symbol_id
                 records = df_bars.to_dict(orient="records")
 
-                # 5. Persist
                 with engine.begin() as write_conn:
                     write_conn.execute(upsert_stmt, records)
 
@@ -199,21 +194,20 @@ def run_15min_ingestion_pipeline(
             time.sleep(0.3)
 
     logger.info(
-        f"🎉 15m Sync Complete: {success_count} synced, {skipped_count} up-to-date, {failed_count} failed out of {len(symbols)}."
+        f"🎉 5m Sync Complete: {success_count} synced, {skipped_count} up-to-date, {failed_count} failed out of {len(symbols)}."
     )
 
 
-def sync_specific_symbols_15min(symbols: list[str]) -> dict:
+def sync_specific_symbols_5min(symbols: list[str]) -> dict:
     """
-    Fast-syncs 15m intraday bars only for the specified list of symbols.
-    Pulls today's intraday bars and delta-upserts into market_data_eod_15min.
+    Fast-syncs 5m intraday bars for specific symbols.
     """
     cleaned_symbols = [s.strip().upper() for s in symbols if s and s.strip()]
     if not cleaned_symbols:
         return {"synced": 0, "failed": 0, "skipped": 0}
 
     upsert_stmt = text("""
-        INSERT INTO market_data_eod_15min (symbol_id, ts, open, high, low, close, volume)
+        INSERT INTO market_data_eod_5min (symbol_id, ts, open, high, low, close, volume)
         VALUES (:symbol_id, :ts, :open, :high, :low, :close, :volume)
         ON CONFLICT (symbol_id, ts) DO UPDATE SET
             open = EXCLUDED.open,
@@ -229,7 +223,6 @@ def sync_specific_symbols_15min(symbols: list[str]) -> dict:
 
     with engine.connect() as conn:
         for sym in cleaned_symbols:
-            # 1. Get symbol ID
             row = (
                 conn.execute(
                     text(
@@ -247,25 +240,22 @@ def sync_specific_symbols_15min(symbols: list[str]) -> dict:
 
             symbol_id = row["id"]
 
-            # 2. Get latest timestamp
             latest_ts = conn.execute(
                 text(
-                    "SELECT MAX(ts) FROM market_data_eod_15min WHERE symbol_id = :sid;"
+                    "SELECT MAX(ts) FROM market_data_eod_5min WHERE symbol_id = :sid;"
                 ),
                 {"sid": symbol_id},
             ).scalar()
 
-            # 3. Resolve instrument key
             instrument_key = upstox_instruments.get_instrument_key(sym)
             if not instrument_key:
                 failed += 1
                 continue
 
             try:
-                # 4. Fetch delta (default 2 days covers today + yesterday's reconciliation)
                 df_bars = upstox_adapter.fetch_historical_candles(
                     instrument_key=instrument_key,
-                    interval="15minute",
+                    interval="5minute",
                     days=2,
                 )
 
@@ -298,5 +288,9 @@ def sync_specific_symbols_15min(symbols: list[str]) -> dict:
     return {"synced": synced, "failed": failed, "skipped": skipped}
 
 
+# Backward compatibility aliases
+run_15min_ingestion_pipeline = run_5min_ingestion_pipeline
+sync_specific_symbols_15min = sync_specific_symbols_5min
+
 if __name__ == "__main__":
-    run_15min_ingestion_pipeline()
+    run_5min_ingestion_pipeline()

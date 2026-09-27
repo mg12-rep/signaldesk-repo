@@ -8,7 +8,7 @@ import pandas as pd
 from app.services.brokers.ibkr_adapter import ibkr_adapter
 from sqlalchemy import create_engine, text
 
-logger = logging.getLogger("ingest_us_15min")
+logger = logging.getLogger("ingest_us_5min")
 
 sync_db_url = os.getenv("DATABASE_URL", "").replace(
     "postgresql+asyncpg://", "postgresql+psycopg2://"
@@ -16,14 +16,14 @@ sync_db_url = os.getenv("DATABASE_URL", "").replace(
 engine = create_engine(sync_db_url, pool_size=5, max_overflow=5)
 
 
-def run_us_15min_ingestion_pipeline(
+def run_us_5min_ingestion_pipeline(
     csv_path: Optional[str] = None,
-    days: int = 90,
+    days: int = 60,
     delay_seconds: float = 1.5,
 ):
     """
-    Reads a CSV of pre-selected US tickers, fetches 15-minute bars using a single persistent
-    IBKR connection, and bulk-upserts into market_data_eod_15min.
+    Reads a CSV of pre-selected US tickers, fetches 5-minute bars using a single persistent
+    IBKR connection, and bulk-upserts into market_data_eod_5min.
     """
     if not csv_path:
         csv_path = "C:/work/signaldesk/data/elder_input_us_stocks.csv"
@@ -57,18 +57,18 @@ def run_us_15min_ingestion_pipeline(
         return
 
     logger.info(
-        f"🚀 Starting US 15-minute persistent batch sync for {len(tickers)} symbols ({days}d)..."
+        f"🚀 Starting US 5-minute persistent batch sync for {len(tickers)} symbols ({days}d)..."
     )
 
-    # 1. Fetch all bars in a single persistent TWS session
-    all_bars = ibkr_adapter.fetch_multiple_15min_bars(
+    # 1. Fetch 5-minute bars in a single persistent TWS session
+    all_bars = ibkr_adapter.fetch_multiple_5min_bars(
         symbols=tickers,
         days=days,
         delay_seconds=delay_seconds,
     )
 
     upsert_stmt = text("""
-        INSERT INTO market_data_eod_15min (symbol_id, ts, open, high, low, close, volume)
+        INSERT INTO market_data_eod_5min (symbol_id, ts, open, high, low, close, volume)
         VALUES (:symbol_id, :ts, :open, :high, :low, :close, :volume)
         ON CONFLICT (symbol_id, ts) DO UPDATE SET
             open = EXCLUDED.open,
@@ -87,7 +87,6 @@ def run_us_15min_ingestion_pipeline(
                 failed_count += 1
                 continue
 
-            # Resolve symbol_id from DB
             row = (
                 conn.execute(
                     text(
@@ -114,33 +113,31 @@ def run_us_15min_ingestion_pipeline(
                 write_conn.execute(upsert_stmt, records)
 
             success_count += 1
-            logger.info(f"✅ {sym}: Persisted {len(records)} bars to DB.")
+            logger.info(f"✅ {sym}: Persisted {len(records)} 5m bars to DB.")
 
     logger.info(
-        f"🎉 US 15-min sync complete: {success_count} persisted, {failed_count} failed out of {len(tickers)}."
+        f"🎉 US 5-min sync complete: {success_count} persisted, {failed_count} failed out of {len(tickers)}."
     )
 
 
-def sync_specific_us_symbols_15min(symbols: List[str], lookback_days: int = 2) -> dict:
+def sync_specific_us_symbols_5min(symbols: List[str], lookback_days: int = 2) -> dict:
     """
-    Fast-syncs recent 15m intraday bars for specific US tickers via IBKR.
-    Fetches 2 days of bars in a single persistent TWS session and upserts into market_data_eod_15min.
+    Fast-syncs recent 5m intraday bars for specific US tickers via IBKR.
     """
     cleaned_symbols = [s.strip().upper() for s in symbols if s and s.strip()]
     if not cleaned_symbols:
         return {"synced": 0, "failed": 0, "skipped": 0}
 
-    logger.info(f"🚀 Starting fast 15m sync for {len(cleaned_symbols)} US symbols...")
+    logger.info(f"🚀 Starting fast 5m sync for {len(cleaned_symbols)} US symbols...")
 
-    # Fetch delta window (2 days covers today + previous session) using persistent session
-    all_bars = ibkr_adapter.fetch_multiple_15min_bars(
+    all_bars = ibkr_adapter.fetch_multiple_5min_bars(
         symbols=cleaned_symbols,
         days=lookback_days,
         delay_seconds=1.0,
     )
 
     upsert_stmt = text("""
-        INSERT INTO market_data_eod_15min (symbol_id, ts, open, high, low, close, volume)
+        INSERT INTO market_data_eod_5min (symbol_id, ts, open, high, low, close, volume)
         VALUES (:symbol_id, :ts, :open, :high, :low, :close, :volume)
         ON CONFLICT (symbol_id, ts) DO UPDATE SET
             open = EXCLUDED.open,
@@ -162,7 +159,6 @@ def sync_specific_us_symbols_15min(symbols: List[str], lookback_days: int = 2) -
                 failed += 1
                 continue
 
-            # 1. Resolve symbol_id
             row = (
                 conn.execute(
                     text(
@@ -181,10 +177,9 @@ def sync_specific_us_symbols_15min(symbols: List[str], lookback_days: int = 2) -
 
             symbol_id = row["id"]
 
-            # 2. Get latest timestamp to filter delta
             latest_ts = conn.execute(
                 text(
-                    "SELECT MAX(ts) FROM market_data_eod_15min WHERE symbol_id = :sid;"
+                    "SELECT MAX(ts) FROM market_data_eod_5min WHERE symbol_id = :sid;"
                 ),
                 {"sid": symbol_id},
             ).scalar()
@@ -205,10 +200,14 @@ def sync_specific_us_symbols_15min(symbols: List[str], lookback_days: int = 2) -
                 write_conn.execute(upsert_stmt, records)
 
             synced += 1
-            logger.info(f"✅ {sym}: Fast-synced {len(records)} bars.")
+            logger.info(f"✅ {sym}: Fast-synced {len(records)} 5m bars.")
 
     return {"synced": synced, "failed": failed, "skipped": skipped}
 
 
+# Backward compatibility aliases
+run_us_15min_ingestion_pipeline = run_us_5min_ingestion_pipeline
+sync_specific_us_symbols_15min = sync_specific_us_symbols_5min
+
 if __name__ == "__main__":
-    run_us_15min_ingestion_pipeline()
+    run_us_5min_ingestion_pipeline()

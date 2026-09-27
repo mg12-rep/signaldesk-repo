@@ -328,11 +328,11 @@ class UpstoxAdapter(BaseBrokerAdapter):
         return response.json() if response else {"status": "error", "message": "Failed"}
 
     def fetch_intraday_candles(
-        self, instrument_key: str, interval: str = "15minute"
+        self, instrument_key: str, interval: str = "5minute"
     ) -> pd.DataFrame:
         """Fetches today's live/completed intraday bars from Upstox V3."""
-        # Upstox V3 URL format for 15-minute intraday:
-        url = f"https://api.upstox.com/v3/historical-candle/intraday/{instrument_key}/minutes/15"
+        unit_mins = "5" if "5" in interval else "15"
+        url = f"https://api.upstox.com/v3/historical-candle/intraday/{instrument_key}/minutes/{unit_mins}"
         response = self._execute_request_with_retry("GET", url)
         if not response or response.status_code != 200:
             return pd.DataFrame()
@@ -358,17 +358,18 @@ class UpstoxAdapter(BaseBrokerAdapter):
     def fetch_historical_candles(
         self,
         instrument_key: str,
-        interval: str = "15minute",
+        interval: str = "5minute",
         days: int = 90,
     ) -> pd.DataFrame:
         """
-        Fetches historical candles for 'day' or '15minute'.
-        For 15m, queries Upstox historical V3 chunks AND combines with the current day's intraday bars.
+        Fetches historical candles for 'day' or '5minute'.
+        For 5m, queries Upstox historical V3 chunks AND combines with the current day's intraday bars.
         Converts all timestamps to UTC for TIMESTAMPTZ storage.
         """
         if interval == "day":
             return self.fetch_historical_daily(instrument_key, days=days)
 
+        unit_mins = "5" if "5" in interval else "15"
         all_candles = []
         end_dt = datetime.now()
         start_dt = end_dt - timedelta(days=days)
@@ -379,7 +380,7 @@ class UpstoxAdapter(BaseBrokerAdapter):
             to_date_str = curr_end.strftime("%Y-%m-%d")
             from_date_str = curr_start.strftime("%Y-%m-%d")
 
-            url = f"https://api.upstox.com/v3/historical-candle/{instrument_key}/minutes/15/{to_date_str}/{from_date_str}"
+            url = f"https://api.upstox.com/v3/historical-candle/{instrument_key}/minutes/{unit_mins}/{to_date_str}/{from_date_str}"
             response = self._execute_request_with_retry("GET", url)
 
             if response and response.status_code == 200:
@@ -409,7 +410,9 @@ class UpstoxAdapter(BaseBrokerAdapter):
 
         # 2. Today's intraday bars
         try:
-            df_intra = self.fetch_intraday_candles(instrument_key, interval="15minute")
+            df_intra = self.fetch_intraday_candles(
+                instrument_key, interval=f"{unit_mins}minute"
+            )
             if not df_intra.empty:
                 frames.append(df_intra)
         except Exception as e:
@@ -427,8 +430,9 @@ class UpstoxAdapter(BaseBrokerAdapter):
         )
         return df
 
-    # Alias for backward compatibility if called directly
+    # Aliases for backward compatibility
     fetch_15min_historical_bars = fetch_historical_candles
+    fetch_5min_historical_bars = fetch_historical_candles
 
 
 upstox_adapter = UpstoxAdapter()

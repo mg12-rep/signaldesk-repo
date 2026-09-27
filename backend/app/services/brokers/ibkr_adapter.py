@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
@@ -11,10 +12,15 @@ logger = logging.getLogger("ibkr_adapter")
 
 
 class IBKRAdapter(BaseBrokerAdapter):
-    def __init__(self, host: str = "127.0.0.1", port: int = 7497, client_id: int = 1):
-        self.host = host
-        self.port = port
-        self.client_id = client_id
+    def __init__(
+        self,
+        host: Optional[str] = None,
+        port: Optional[int] = None,
+        client_id: Optional[int] = None,
+    ):
+        self.host = host or os.getenv("IBKR_HOST", "127.0.0.1")
+        self.port = int(port or os.getenv("IBKR_PORT", 4001))
+        self.client_id = int(client_id or os.getenv("IBKR_CLIENT_ID", 99))
         self._executor = ThreadPoolExecutor(max_workers=1)
 
     def _run_in_clean_thread(self, target_func):
@@ -345,7 +351,7 @@ class IBKRAdapter(BaseBrokerAdapter):
             logger.error(f"Failed batch historical data fetch: {err}")
             return {}
 
-    def fetch_15min_historical_bars(
+    def fetch_5min_historical_bars(
         self,
         symbol: str,
         days: int = 90,
@@ -353,7 +359,7 @@ class IBKRAdapter(BaseBrokerAdapter):
         currency: str = "USD",
     ) -> pd.DataFrame:
         """
-        Fetches 15-minute OHLCV historical bars from IBKR.
+        Fetches 5-minute OHLCV historical bars from IBKR.
         Returns DataFrame with columns: ['ts', 'open', 'high', 'low', 'close', 'volume'].
         """
 
@@ -369,7 +375,7 @@ class IBKRAdapter(BaseBrokerAdapter):
                 contract,
                 endDateTime="",
                 durationStr=duration,
-                barSizeSetting="15 mins",
+                barSizeSetting="5 mins",
                 whatToShow="TRADES",
                 useRTH=True,
                 formatDate=1,
@@ -403,17 +409,17 @@ class IBKRAdapter(BaseBrokerAdapter):
         try:
             return self._run_in_clean_thread(_fetch)
         except Exception as e:
-            logger.error(f"Error fetching IBKR 15-minute bars for {symbol}: {e}")
+            logger.error(f"Error fetching IBKR 5-minute bars for {symbol}: {e}")
             return pd.DataFrame()
 
-    def fetch_multiple_15min_bars(
+    def fetch_multiple_5min_bars(
         self,
         symbols: List[str],
         days: int = 90,
         delay_seconds: float = 1.5,
     ) -> Dict[str, pd.DataFrame]:
         """
-        Maintains a single persistent connection across all tickers to fetch 15-minute bars,
+        Maintains a single persistent connection across all tickers to fetch 5-minute bars,
         avoiding repetitive connect/disconnect cycles and TWS pacing drops.
         """
 
@@ -435,7 +441,7 @@ class IBKRAdapter(BaseBrokerAdapter):
             for idx, raw_sym in enumerate(symbols, start=1):
                 sym = raw_sym.upper().strip()
                 logger.info(
-                    f"[{idx}/{len(symbols)}] Requesting 15m bars for {sym} ({days}d)..."
+                    f"[{idx}/{len(symbols)}] Requesting 5m bars for {sym} ({days}d)..."
                 )
 
                 try:
@@ -449,7 +455,7 @@ class IBKRAdapter(BaseBrokerAdapter):
                         contract,
                         endDateTime="",
                         durationStr=f"{days} D",
-                        barSizeSetting="15 mins",
+                        barSizeSetting="5 mins",
                         whatToShow="TRADES",
                         useRTH=True,
                         formatDate=1,
@@ -490,7 +496,7 @@ class IBKRAdapter(BaseBrokerAdapter):
 
                 except Exception as e:
                     logger.error(
-                        f"[{idx}/{len(symbols)}] Error fetching 15m bars for {sym}: {e}"
+                        f"[{idx}/{len(symbols)}] Error fetching 5m bars for {sym}: {e}"
                     )
 
                 ib.sleep(delay_seconds)
@@ -500,8 +506,12 @@ class IBKRAdapter(BaseBrokerAdapter):
         try:
             return self._run_in_clean_thread(_batch)
         except Exception as err:
-            logger.error(f"Failed batch 15m historical data fetch: {err}")
+            logger.error(f"Failed batch 5m historical data fetch: {err}")
             return {}
+
+    # Backward compatibility aliases
+    fetch_15min_historical_bars = fetch_5min_historical_bars
+    fetch_multiple_15min_bars = fetch_multiple_5min_bars
 
 
 ibkr_adapter = IBKRAdapter()

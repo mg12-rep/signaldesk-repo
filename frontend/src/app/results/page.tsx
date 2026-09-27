@@ -65,6 +65,35 @@ function ResultsContent() {
     | "US";
   const currencySymbol = market === "NSE" ? "₹" : "$";
 
+  const [syncing, setSyncing] = useState(false);
+
+  // Sync only the tickers currently visible in the active tab/table
+  const handleSyncDisplayed = async () => {
+    if (!currentList.length) return;
+    setSyncing(true);
+
+    const symbols = Array.from(new Set(currentList.map((item) => item.ticker)));
+
+    try {
+      const res = await fetch(
+        "http://localhost:8000/api/v1/sync/intraday-symbols",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ symbols, market }),
+        },
+      );
+
+      if (!res.ok) {
+        console.error("Fast sync failed:", await res.text());
+      }
+    } catch (err) {
+      console.error("Error triggering fast sync:", err);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const fetchSignals = async () => {
     setLoading(true);
     try {
@@ -142,16 +171,33 @@ function ResultsContent() {
           </div>
         </div>
 
-        <button
-          onClick={fetchSignals}
-          disabled={loading}
-          className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 px-3 py-1.5 rounded-md text-xs font-medium transition"
-        >
-          <RefreshCw
-            className={`h-3.5 w-3.5 text-emerald-400 ${loading ? "animate-spin" : ""}`}
-          />
-          <span>Rerun Scan</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleSyncDisplayed}
+            disabled={syncing || loading || currentList.length === 0}
+            className="flex items-center gap-1.5 bg-cyan-950 hover:bg-cyan-900 text-cyan-300 border border-cyan-800 px-3 py-1.5 rounded-md text-xs font-medium transition disabled:opacity-50"
+          >
+            <RefreshCw
+              className={`h-3.5 w-3.5 text-cyan-400 ${syncing ? "animate-spin" : ""}`}
+            />
+            <span>
+              {syncing
+                ? "Syncing 15m..."
+                : `Sync Displayed (${currentList.length})`}
+            </span>
+          </button>
+
+          <button
+            onClick={fetchSignals}
+            disabled={loading || syncing}
+            className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 px-3 py-1.5 rounded-md text-xs font-medium transition disabled:opacity-50"
+          >
+            <RefreshCw
+              className={`h-3.5 w-3.5 text-emerald-400 ${loading ? "animate-spin" : ""}`}
+            />
+            <span>Rerun Scan</span>
+          </button>
+        </div>
       </div>
 
       {/* Signal Type Tabs */}

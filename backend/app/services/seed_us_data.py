@@ -206,8 +206,8 @@ async def _fetch_and_process_symbol(
 
 async def _run_sync_async(
     host: str = "127.0.0.1",
-    port: int = 7497,
-    client_id: int = 2,
+    port: int = 4001,
+    client_id: int = 99,
     max_symbols: Optional[int] = None,
     concurrency_limit: int = 4,  # IBKR allows up to ~50 req/10s safely
 ):
@@ -268,8 +268,8 @@ async def _run_sync_async(
 
 def seed_us_universe_from_db(
     host: str = "127.0.0.1",
-    port: int = 7497,
-    client_id: int = 2,
+    port: int = 4001,
+    client_id: int = 99,
     max_symbols: Optional[int] = None,
 ):
     """Clean synchronous entry point that manages the asyncio loop."""

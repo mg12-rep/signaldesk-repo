@@ -6,6 +6,7 @@ import {
   IChartApi,
   CandlestickSeries,
   LineSeries,
+  HistogramSeries,
 } from "lightweight-charts";
 import { X, Loader2 } from "lucide-react";
 
@@ -24,6 +25,8 @@ interface ChartPayload {
   sma50: any[];
   sma150: any[];
   sma200: any[];
+  volume?: any[];
+  vol_sma20?: any[];
 }
 
 export default function Elder75mChartModal({
@@ -36,6 +39,8 @@ export default function Elder75mChartModal({
   const chartRef = useRef<IChartApi | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const timeframeLabel = market === "US" ? "65m" : "75m";
 
   useEffect(() => {
     if (!isOpen || !symbol) return;
@@ -65,7 +70,7 @@ export default function Elder75mChartModal({
 
         const chart = createChart(chartContainerRef.current, {
           width: chartContainerRef.current.clientWidth,
-          height: 480,
+          height: 520,
           layout: {
             background: { color: "#020617" },
             textColor: "#94a3b8",
@@ -74,8 +79,13 @@ export default function Elder75mChartModal({
             vertLines: { color: "#1e293b" },
             horzLines: { color: "#1e293b" },
           },
+          rightPriceScale: {
+            scaleMargins: {
+              top: 0.1,
+              bottom: 0.25, // Leaves the bottom 25% clear for the volume pane
+            },
+          },
           localization: {
-            // Shows Date + Time on crosshair hover (e.g., "16 Sep, 10:30")
             timeFormatter: (timestamp: number) => {
               const date = new Date(timestamp * 1000);
               return date.toLocaleString("en-IN", {
@@ -92,10 +102,8 @@ export default function Elder75mChartModal({
             timeVisible: true,
             secondsVisible: false,
             borderColor: "#334155",
-            // Shows Date on day boundaries and Time on intraday steps
             tickMarkFormatter: (timestamp: number, tickMarkType: number) => {
               const date = new Date(timestamp * 1000);
-              // tickMarkType: 0 = Year, 1 = Month, 2 = DayOfMonth, 3 = Time, 4 = TimeWithSeconds
               if (tickMarkType <= 2) {
                 return date.toLocaleDateString("en-IN", {
                   timeZone: tz,
@@ -115,16 +123,16 @@ export default function Elder75mChartModal({
 
         chartRef.current = chart;
 
-        // 1. Candlestick Series (RGB Impulse Colors)
+        // 1. Candlestick Series (Elder Impulse Candles)
         const candleSeries = chart.addSeries(CandlestickSeries, {
           upColor: "#22c55e",
-          downColor: "#16a34a",
+          downColor: "#ef4444",
           borderVisible: true,
           wickVisible: true,
         });
         candleSeries.setData(data.candles);
 
-        // 2. Overlaid Moving Averages with custom colors
+        // 2. Overlaid Moving Averages
         if (data.ema8?.length) {
           const ema8 = chart.addSeries(LineSeries, {
             color: "#f97316", // Orange
@@ -145,7 +153,7 @@ export default function Elder75mChartModal({
 
         if (data.sma50?.length) {
           const sma50 = chart.addSeries(LineSeries, {
-            color: "#3b82f6", // Blue
+            color: "#60a5fa", // Light Blue
             lineWidth: 2,
             title: "SMA 50",
           });
@@ -168,6 +176,38 @@ export default function Elder75mChartModal({
             title: "SMA 200",
           });
           sma200.setData(data.sma200);
+        }
+
+        // 3. Volume Sub-Pane (Histogram + Blue 20 SMA Line)
+        if (data.volume?.length) {
+          const volumeSeries = chart.addSeries(HistogramSeries, {
+            priceScaleId: "", // Sets as an overlay scale
+            priceFormat: {
+              type: "volume",
+            },
+          });
+          volumeSeries.setData(data.volume);
+
+          // Apply bottom 20% scale margins directly via the series instance
+          volumeSeries.priceScale().applyOptions({
+            scaleMargins: {
+              top: 0.8, // Pushes volume bars down to the bottom 20% of the chart
+              bottom: 0,
+            },
+          });
+
+          if (data.vol_sma20?.length) {
+            const volSmaSeries = chart.addSeries(LineSeries, {
+              priceScaleId: "", // Shares the same overlay price scale
+              color: "#2563eb", // Solid Royal Blue
+              lineWidth: 2,
+              title: "Vol SMA 20",
+              priceFormat: {
+                type: "volume",
+              },
+            });
+            volSmaSeries.setData(data.vol_sma20);
+          }
         }
 
         chart.timeScale().fitContent();
@@ -212,7 +252,7 @@ export default function Elder75mChartModal({
               {symbol}
             </h3>
             <span className="text-[11px] px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800 font-mono">
-              75m Elder Impulse
+              {timeframeLabel} Elder Impulse
             </span>
             {/* Indicator Legend Bar */}
             <div className="hidden sm:flex items-center gap-3 text-[11px] font-mono text-slate-400 pl-4 border-l border-slate-800">
@@ -225,7 +265,7 @@ export default function Elder75mChartModal({
                 EMA 21
               </span>
               <span className="flex items-center gap-1">
-                <span className="h-2 w-2 rounded-full bg-blue-500 inline-block" />{" "}
+                <span className="h-2 w-2 rounded-full bg-blue-400 inline-block" />{" "}
                 SMA 50
               </span>
               <span className="flex items-center gap-1">
@@ -235,6 +275,10 @@ export default function Elder75mChartModal({
               <span className="flex items-center gap-1">
                 <span className="h-2 w-2 rounded-full bg-rose-500 inline-block" />{" "}
                 SMA 200
+              </span>
+              <span className="flex items-center gap-1 border-l border-slate-700 pl-2">
+                <span className="h-2 w-2 rounded-full bg-blue-600 inline-block" />{" "}
+                Vol SMA 20
               </span>
             </div>
           </div>
@@ -252,7 +296,7 @@ export default function Elder75mChartModal({
             <div className="absolute inset-0 bg-slate-950/70 z-10 flex flex-col items-center justify-center gap-2">
               <Loader2 className="h-6 w-6 text-cyan-400 animate-spin" />
               <span className="text-xs text-slate-400 font-mono">
-                Loading 75m bars...
+                Loading {timeframeLabel} bars...
               </span>
             </div>
           )}
@@ -261,7 +305,7 @@ export default function Elder75mChartModal({
               {error}
             </div>
           )}
-          <div ref={chartContainerRef} className="w-full h-[480px]" />
+          <div ref={chartContainerRef} className="w-full h-[520px]" />
         </div>
       </div>
     </div>

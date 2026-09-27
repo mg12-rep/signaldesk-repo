@@ -42,7 +42,7 @@ interface DashboardSummary {
   market_health: MarketHealthItem[];
 }
 
-type SyncTarget = "NSE_DAILY" | "US_DAILY" | "US_ETFS" | "NSE_15M" | "US_15M";
+type SyncTarget = "NSE_DAILY" | "US_DAILY" | "US_ETFS" | "NSE_5M" | "US_5M";
 
 export default function DashboardPage() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
@@ -80,13 +80,17 @@ export default function DashboardPage() {
       endpoint = "http://localhost:8000/api/v1/sync/us/daily";
     if (target === "US_ETFS")
       endpoint = "http://localhost:8000/api/v1/sync/us-etfs";
-    if (target === "NSE_15M") {
-      endpoint =
-        "http://localhost:8000/api/v1/sync/nse/15min?csv_path=C:/work/signaldesk/data/elder_input_nse_stocks.csv&days=90";
+    if (target === "NSE_5M") {
+      const path = encodeURIComponent(
+        "C:/work/signaldesk/data/elder_input_nse_stocks.csv",
+      );
+      endpoint = `http://localhost:8000/api/v1/sync/nse/5min?csv_path=${path}&days=60`;
     }
-    if (target === "US_15M") {
-      endpoint =
-        "http://localhost:8000/api/v1/sync/us/15min?csv_path=C:/work/signaldesk/data/elder_input_us_stocks.csv&days=90";
+    if (target === "US_5M") {
+      const path = encodeURIComponent(
+        "C:/work/signaldesk/data/elder_input_us_stocks.csv",
+      );
+      endpoint = `http://localhost:8000/api/v1/sync/us/5min?csv_path=${path}&days=60`;
     }
 
     try {
@@ -169,34 +173,32 @@ export default function DashboardPage() {
             </button>
           </div>
 
-          {/* Intraday 15m Elder Sync Group */}
+          {/* Intraday 5m Elder Sync Group */}
           <div className="flex items-center bg-slate-950 p-1 rounded-lg border border-cyan-900/50 gap-1">
             <button
-              onClick={() => triggerSync("NSE_15M")}
+              onClick={() => triggerSync("NSE_5M")}
               disabled={syncingTarget !== null}
-              title="Syncs 15m bars from elder_input_nse_stocks.csv"
+              title="Syncs 5m bars from elder_input_nse_stocks.csv"
               className="flex items-center gap-1.5 bg-cyan-950/40 hover:bg-cyan-900/60 text-cyan-300 border border-cyan-800/60 px-2.5 py-1 rounded text-xs font-medium transition disabled:opacity-50"
             >
               <Clock
-                className={`h-3.5 w-3.5 text-cyan-400 ${syncingTarget === "NSE_15M" ? "animate-spin" : ""}`}
+                className={`h-3.5 w-3.5 text-cyan-400 ${syncingTarget === "NSE_5M" ? "animate-spin" : ""}`}
               />
               <span>
-                {syncingTarget === "NSE_15M" ? "Syncing..." : "NSE 15m"}
+                {syncingTarget === "NSE_5M" ? "Syncing..." : "NSE 5m"}
               </span>
             </button>
 
             <button
-              onClick={() => triggerSync("US_15M")}
+              onClick={() => triggerSync("US_5M")}
               disabled={syncingTarget !== null}
-              title="Syncs 15m bars from elder_input_us_stocks.csv via IBKR"
+              title="Syncs 5m bars from elder_input_us_stocks.csv via IBKR"
               className="flex items-center gap-1.5 bg-cyan-950/40 hover:bg-cyan-900/60 text-cyan-300 border border-cyan-800/60 px-2.5 py-1 rounded text-xs font-medium transition disabled:opacity-50"
             >
               <Clock
-                className={`h-3.5 w-3.5 text-cyan-400 ${syncingTarget === "US_15M" ? "animate-spin" : ""}`}
+                className={`h-3.5 w-3.5 text-cyan-400 ${syncingTarget === "US_5M" ? "animate-spin" : ""}`}
               />
-              <span>
-                {syncingTarget === "US_15M" ? "Syncing..." : "US 15m"}
-              </span>
+              <span>{syncingTarget === "US_5M" ? "Syncing..." : "US 5m"}</span>
             </button>
           </div>
         </div>

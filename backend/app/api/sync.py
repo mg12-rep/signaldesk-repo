@@ -9,11 +9,9 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-router = APIRouter(prefix="/sync", tags=["Market Data Sync"])
-
 logger = logging.getLogger("sync_router")
 
-router = APIRouter()
+router = APIRouter(tags=["Market Data Sync"])
 
 
 class SyncResponse(BaseModel):
@@ -30,15 +28,27 @@ def background_nse_daily_sync(symbols: Optional[List[str]] = None):
     logger.info("🚀 [NSE DAILY] Starting EOD delta ingestion...")
     try:
         if symbols:
-            run_eod_pipeline(
-                symbols
-            )  # Fixed: passed positionally (matches 'symbols: list[str]')
+            run_eod_pipeline(symbols)
         else:
-            # Multi-threaded delta sync for the full active NSE universe
             run_full_universe_sync(full_seed_years=2, max_workers=8)
         logger.info("✅ [NSE DAILY] Ingestion finished successfully.")
     except Exception as e:
         logger.error(f"❌ [NSE DAILY FAILED] Error: {e}", exc_info=True)
+
+
+def background_nse_5min_sync(csv_path: Optional[str] = None, days: int = 60):
+    logger.info(
+        f"🚀 [NSE 5MIN] Starting 5-minute ingestion (CSV: {csv_path}, Lookback: {days}d)..."
+    )
+    try:
+        from app.services.seed_nse_data_5min import run_5min_ingestion_pipeline
+
+        run_5min_ingestion_pipeline(csv_path=csv_path, days=days)
+        logger.info("✅ [NSE 5MIN] Ingestion finished successfully.")
+    except ImportError:
+        logger.error("❌ [NSE 5MIN] app.services.seed_nse_data_5min not found.")
+    except Exception as e:
+        logger.error(f"❌ [NSE 5MIN FAILED] Error: {e}", exc_info=True)
 
 
 def background_nse_15min_sync(csv_path: Optional[str] = None, days: int = 90):
@@ -51,21 +61,9 @@ def background_nse_15min_sync(csv_path: Optional[str] = None, days: int = 90):
         run_15min_ingestion_pipeline(csv_path=csv_path, days=days)
         logger.info("✅ [NSE 15MIN] Ingestion finished successfully.")
     except ImportError:
-        logger.error(
-            "❌ [NSE 15MIN] app.services.ingest_15min_data not implemented yet."
-        )
+        logger.error("❌ [NSE 15MIN] app.services.seed_nse_data_15min not found.")
     except Exception as e:
         logger.error(f"❌ [NSE 15MIN FAILED] Error: {e}", exc_info=True)
-
-
-def background_us_daily_with_etf_sync():
-    logger.info("🚀 [US DAILY] Starting US & Global market data sync via TWS/IBKR...")
-    try:
-        sync_us_etf_market_data()
-        seed_us_universe_from_db()
-        logger.info("✅ [US DAILY] S&P 500 & US ETF sync complete.")
-    except Exception as e:
-        logger.error(f"❌ [US DAILY FAILED] Error: {e}", exc_info=True)
 
 
 def background_us_daily_sync():
@@ -77,6 +75,21 @@ def background_us_daily_sync():
         logger.error(f"❌ [US DAILY FAILED] Error: {e}", exc_info=True)
 
 
+def background_us_5min_sync(csv_path: Optional[str] = None, days: int = 60):
+    logger.info(
+        f"🚀 [US 5MIN] Starting US 5-minute ingestion (CSV: {csv_path}, Lookback: {days}d)..."
+    )
+    try:
+        from app.services.seed_us_data_5min import run_us_5min_ingestion_pipeline
+
+        run_us_5min_ingestion_pipeline(csv_path=csv_path, days=days)
+        logger.info("✅ [US 5MIN] Ingestion finished successfully.")
+    except ImportError:
+        logger.error("❌ [US 5MIN] app.services.seed_us_data_5min not found.")
+    except Exception as e:
+        logger.error(f"❌ [US 5MIN FAILED] Error: {e}", exc_info=True)
+
+
 def background_us_15min_sync(csv_path: Optional[str] = None, days: int = 90):
     logger.info(
         f"🚀 [US 15MIN] Starting US 15-minute ingestion (CSV: {csv_path}, Lookback: {days}d)..."
@@ -86,6 +99,8 @@ def background_us_15min_sync(csv_path: Optional[str] = None, days: int = 90):
 
         run_us_15min_ingestion_pipeline(csv_path=csv_path, days=days)
         logger.info("✅ [US 15MIN] Ingestion finished successfully.")
+    except ImportError:
+        logger.error("❌ [US 15MIN] app.services.seed_us_data_15min not found.")
     except Exception as e:
         logger.error(f"❌ [US 15MIN FAILED] Error: {e}", exc_info=True)
 
@@ -123,6 +138,28 @@ def trigger_nse_daily_sync(
     )
 
 
+@router.post("/nse/5min", response_model=SyncResponse)
+def trigger_nse_5min_sync(
+    background_tasks: BackgroundTasks,
+    csv_path: Optional[str] = Query(
+        default="data/selected_stocks.csv",
+        description="Path to CSV containing pre-selected stock symbols",
+    ),
+    days: int = Query(
+        default=60,
+        ge=1,
+        le=60,
+        description="Lookback window in days (Upstox 5m limit: 60 days)",
+    ),
+):
+    """Syncs 5-minute intraday candles into market_data_eod_5min for pre-selected NSE stocks."""
+    background_tasks.add_task(background_nse_5min_sync, csv_path=csv_path, days=days)
+    return SyncResponse(
+        status="SUCCESS",
+        message=f"5-minute ingestion started in background for stocks in '{csv_path}' ({days} days lookback).",
+    )
+
+
 @router.post("/nse/15min", response_model=SyncResponse)
 def trigger_nse_15min_sync(
     background_tasks: BackgroundTasks,
@@ -137,7 +174,7 @@ def trigger_nse_15min_sync(
         description="Lookback window in days (Upstox limit: 90 days)",
     ),
 ):
-    """Syncs 15-minute intraday candles into market_data_eod_15min for pre-selected NSE stocks."""
+    """Syncs 15-minute intraday candles into market_data_eod_15min (legacy fallback)."""
     background_tasks.add_task(background_nse_15min_sync, csv_path=csv_path, days=days)
     return SyncResponse(
         status="SUCCESS",
@@ -159,6 +196,28 @@ def trigger_us_sync(background_tasks: BackgroundTasks):
     )
 
 
+@router.post("/us/5min", response_model=SyncResponse)
+def trigger_us_5min_sync(
+    background_tasks: BackgroundTasks,
+    csv_path: Optional[str] = Query(
+        default="data/selected_us_stocks.csv",
+        description="Path to CSV containing pre-selected US stock symbols",
+    ),
+    days: int = Query(
+        default=60,
+        ge=1,
+        le=60,
+        description="Lookback window in days for 5-min bars",
+    ),
+):
+    """Syncs 5-minute intraday candles into market_data_eod_5min for pre-selected US stocks via IBKR."""
+    background_tasks.add_task(background_us_5min_sync, csv_path=csv_path, days=days)
+    return SyncResponse(
+        status="SUCCESS",
+        message=f"US 5-minute ingestion started in background for stocks in '{csv_path}' ({days} days lookback).",
+    )
+
+
 @router.post("/us/15min", response_model=SyncResponse)
 def trigger_us_15min_sync(
     background_tasks: BackgroundTasks,
@@ -173,7 +232,7 @@ def trigger_us_15min_sync(
         description="Lookback window in days (IBKR supports up to 365d for 15-min bars)",
     ),
 ):
-    """Syncs 15-minute intraday candles into market_data_eod_15min for pre-selected US stocks via IBKR."""
+    """Syncs 15-minute intraday candles into market_data_eod_15min via IBKR (legacy fallback)."""
     background_tasks.add_task(background_us_15min_sync, csv_path=csv_path, days=days)
     return SyncResponse(
         status="SUCCESS",
@@ -186,3 +245,38 @@ async def sync_us_etfs_endpoint(db: AsyncSession = Depends(get_db)):
     """Synchronous/async direct sync for US ETFs using an active DB session."""
     result = await sync_us_etf_market_data(db)
     return {"status": "success", "result": result}
+
+
+class TargetedSyncRequest(BaseModel):
+    symbols: List[str]
+    market: str = "NSE"
+
+
+@router.post("/intraday-symbols", response_model=SyncResponse)
+def trigger_targeted_intraday_sync(payload: TargetedSyncRequest):
+    """
+    Synchronously syncs the latest 5m bars for a specific list of tickers
+    currently displayed on the frontend results view.
+    """
+    market_upper = payload.market.upper().strip()
+    if market_upper == "NSE":
+        from app.services.seed_nse_data_5min import sync_specific_symbols_5min
+
+        result = sync_specific_symbols_5min(payload.symbols)
+    elif market_upper == "US":
+        from app.services.seed_us_data_5min import sync_specific_us_symbols_5min
+
+        result = sync_specific_us_symbols_5min(payload.symbols)
+    else:
+        return SyncResponse(
+            status="NOT_IMPLEMENTED",
+            message=f"Targeted fast sync not configured for market '{payload.market}'.",
+            symbol_count=len(payload.symbols),
+        )
+
+    return SyncResponse(
+        status="SUCCESS",
+        message=f"Synced {result['synced']} symbols ({result['skipped']} up to date, {result['failed']} failed).",
+        symbol_count=len(payload.symbols),
+        details=result,
+    )
