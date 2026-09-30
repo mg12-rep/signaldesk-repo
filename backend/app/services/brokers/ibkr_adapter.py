@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 from app.services.brokers.base_adapter import BaseBrokerAdapter
-from ib_insync import IB, LimitOrder, MarketOrder, Stock
+from ib_async import IB, LimitOrder, MarketOrder, Stock
 
 logger = logging.getLogger("ibkr_adapter")
 

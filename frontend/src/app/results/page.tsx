@@ -76,7 +76,7 @@ function ResultsContent() {
 
     try {
       const res = await fetch(
-        "http://localhost:8000/api/v1/sync/intraday-symbols",
+        "/api/v1/sync/intraday-symbols",
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -98,7 +98,7 @@ function ResultsContent() {
     setLoading(true);
     try {
       const res = await fetch(
-        `http://localhost:8000/api/v1/scanner/run?${searchParams.toString()}`,
+        `/api/v1/scanner/run?${searchParams.toString()}`,
       );
       if (res.ok) {
         const json: ScannerRunResponse = await res.json();

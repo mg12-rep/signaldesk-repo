@@ -1,4 +1,6 @@
+import argparse
 import asyncio
+import csv
 import logging
 import os
 from datetime import date, datetime, timedelta
@@ -8,7 +10,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 from app.services.brokers.ibkr_adapter import ibkr_adapter
 from dotenv import load_dotenv
-from ib_insync import IB, Index, Stock, util
+from ib_async import IB, Index, Stock, util
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,7 +28,8 @@ engine = create_engine(sync_db_url, pool_size=5, max_overflow=10)
 
 def get_active_us_symbols_and_dates() -> List[Dict]:
     """
-    Fetches active US symbols, index flags, and their latest trade dates in a single SQL roundtrip.
+    Fetches active US symbols (S&P 500 / NASDAQ 100 constituents + priority ETFs)
+    and their latest trade dates in a single SQL roundtrip.
     """
     query = text("""
         WITH target_stocks AS (
@@ -67,6 +70,88 @@ def get_active_us_symbols_and_dates() -> List[Dict]:
     with engine.connect() as conn:
         results = conn.execute(query).mappings().all()
         return [dict(r) for r in results]
+
+
+def get_custom_us_symbols_and_dates(csv_path: str) -> List[Dict]:
+    """
+    Reads tickers from a custom CSV or text file and resolves their symbol_ids
+    and latest dates from the database.
+    """
+    p = Path(csv_path)
+    if not p.is_file():
+        logger.error(f"Custom US file not found: {csv_path}")
+        return []
+
+    raw_symbols = set()
+    with open(p, mode="r", encoding="utf-8-sig") as f:
+        sample = f.read(1024)
+        f.seek(0)
+        if "," in sample:
+            reader = csv.DictReader(f)
+            for row in reader:
+                sym = (
+                    row.get("ticker")
+                    or row.get("Symbol")
+                    or row.get("SYMBOL")
+                    or row.get("trading_symbol")
+                )
+                if sym:
+                    raw_symbols.add(sym.strip().upper())
+        else:
+            for line in f:
+                sym = line.strip().upper()
+                if sym and not sym.startswith("#"):
+                    raw_symbols.add(sym)
+
+    if not raw_symbols:
+        logger.warning(f"No symbols found in file: {csv_path}")
+        return []
+
+    query = text("""
+        WITH target_stocks AS (
+            SELECT id AS symbol_id
+            FROM symbols
+            WHERE UPPER(trading_symbol) = ANY(:symbols) AND is_active = TRUE
+        ),
+        latest_eod AS (
+            SELECT symbol_id, MAX(date) AS latest_eod_date
+            FROM market_data_eod
+            GROUP BY symbol_id
+        ),
+        latest_hist AS (
+            SELECT symbol_id, MAX(date) AS latest_hist_date
+            FROM market_data_history
+            GROUP BY symbol_id
+        )
+        SELECT 
+            s.id AS symbol_id,
+            s.trading_symbol,
+            s.is_index,
+            COALESCE(e.code, 'US') AS exchange_code,
+            GREATEST(le.latest_eod_date, lh.latest_hist_date) AS latest_date
+        FROM target_stocks t
+        JOIN symbols s ON s.id = t.symbol_id
+        LEFT JOIN exchanges e ON s.exchange_id = e.id
+        LEFT JOIN latest_eod le ON s.id = le.symbol_id
+        LEFT JOIN latest_hist lh ON s.id = lh.symbol_id
+        ORDER BY s.is_index DESC, s.trading_symbol ASC;
+    """)
+
+    with engine.connect() as conn:
+        results = conn.execute(query, {"symbols": list(raw_symbols)}).mappings().all()
+        matched = [dict(r) for r in results]
+
+    matched_symbols = {r["trading_symbol"].upper() for r in matched}
+    missing = raw_symbols - matched_symbols
+    if missing:
+        logger.warning(
+            f"⚠ {len(missing)} tickers from '{csv_path}' not found in DB symbols table: {sorted(list(missing))[:10]}..."
+        )
+
+    logger.info(
+        f"🎯 Matched {len(matched)}/{len(raw_symbols)} US symbols from '{csv_path}' against DB."
+    )
+    return matched
 
 
 def build_ibkr_contract(trading_symbol: str, is_index: bool = False) -> object:
@@ -158,13 +243,23 @@ async def _fetch_and_process_symbol(
     duration = (
         "2 Y" if latest_date is None else f"{max((today - latest_date).days + 2, 5)} D"
     )
-    contract = item.get("qualified_contract")
-    if not contract:
-        stats["failed"] += 1
-        return
 
-    # 2. Rate-limited concurrent request using semaphore and async reqHistoricalData
+    contract = build_ibkr_contract(trading_sym, is_index_flag)
+
     async with semaphore:
+        try:
+            qualified = await asyncio.wait_for(
+                ib.qualifyContractsAsync(contract), timeout=2.5
+            )
+            if not qualified or not contract.conId:
+                logger.warning(f"⚠️ Could not qualify contract: {trading_sym}")
+                stats["failed"] += 1
+                return
+        except (asyncio.TimeoutError, Exception) as e:
+            logger.warning(f"⚠️ Qualification timed out/failed for {trading_sym}: {e}")
+            stats["failed"] += 1
+            return
+
         for attempt in range(1, 4):
             try:
                 bars = await ib.reqHistoricalDataAsync(
@@ -182,7 +277,7 @@ async def _fetch_and_process_symbol(
                     _partition_and_persist(df, sym_id, cutoff_date)
                     stats["success"] += 1
                     logger.info(f"✅ {trading_sym} ({len(df)} bars)")
-                    await asyncio.sleep(0.1)  # Staggers execution window
+                    await asyncio.sleep(0.1)
                     return
                 else:
                     stats["failed"] += 1
@@ -205,19 +300,15 @@ async def _fetch_and_process_symbol(
 
 
 async def _run_sync_async(
+    symbols: List[Dict],
     host: str = "127.0.0.1",
     port: int = 4001,
     client_id: int = 99,
-    max_symbols: Optional[int] = None,
-    concurrency_limit: int = 4,  # IBKR allows up to ~50 req/10s safely
+    concurrency_limit: int = 4,
 ):
-    symbols = get_active_us_symbols_and_dates()
-    if max_symbols:
-        symbols = symbols[:max_symbols]
-
     total = len(symbols)
     if total == 0:
-        logger.warning("No active US symbols found.")
+        logger.warning("No active US symbols found to process.")
         return
 
     ib = IB()
@@ -231,26 +322,9 @@ async def _run_sync_async(
     today = datetime.now().date()
     cutoff_date = today - timedelta(days=365)
 
-    # 1. Bulk qualify contracts concurrently in chunks of 50
-    logger.info(f"⚙️ Pre-qualifying {total} contracts...")
-    contracts_to_qualify = [
-        build_ibkr_contract(item["trading_symbol"], item["is_index"])
-        for item in symbols
-    ]
-
-    # Process qualification in parallel batches
-    for i in range(0, len(contracts_to_qualify), 50):
-        batch = contracts_to_qualify[i : i + 50]
-        try:
-            await ib.qualifyContractsAsync(*batch)
-        except Exception as e:
-            logger.warning(f"Batch qualification issue: {e}")
-
-    for idx, item in enumerate(symbols):
-        item["qualified_contract"] = contracts_to_qualify[idx]
-
-    # 2. Execute Async Parallel Data Requests with Semaphore
-    logger.info(f"🚀 Starting parallel ingestion (Concurrency: {concurrency_limit})...")
+    logger.info(
+        f"🚀 Starting parallel ingestion for {total} symbols (Concurrency: {concurrency_limit})..."
+    )
     semaphore = asyncio.Semaphore(concurrency_limit)
     stats = {"success": 0, "skipped": 0, "failed": 0}
 
@@ -272,10 +346,30 @@ def seed_us_universe_from_db(
     client_id: int = 99,
     max_symbols: Optional[int] = None,
 ):
-    """Clean synchronous entry point that manages the asyncio loop."""
+    """Syncs S&P 500 / NASDAQ 100 universe loaded from database."""
+    symbols = get_active_us_symbols_and_dates()
+    if max_symbols:
+        symbols = symbols[:max_symbols]
     asyncio.run(
         _run_sync_async(
-            host=host, port=port, client_id=client_id, max_symbols=max_symbols
+            symbols=symbols, host=host, port=port, client_id=client_id
+        )
+    )
+
+
+def seed_us_custom_from_file(
+    csv_path: str,
+    host: str = "127.0.0.1",
+    port: int = 4001,
+    client_id: int = 99,
+):
+    """Syncs US symbols listed in a custom CSV or text file."""
+    symbols = get_custom_us_symbols_and_dates(csv_path)
+    if not symbols:
+        return
+    asyncio.run(
+        _run_sync_async(
+            symbols=symbols, host=host, port=port, client_id=client_id
         )
     )
 
@@ -295,7 +389,6 @@ async def sync_us_etf_market_data(
     today = datetime.now().date()
     cutoff_date = today - timedelta(days=365)
 
-    # Phase 1: Inspect DB status for each ticker & build request queue
     batch_queue: List[Dict[str, Any]] = []
     symbol_meta: Dict[str, Dict[str, Any]] = {}
     skipped_count = 0
@@ -303,7 +396,6 @@ async def sync_us_etf_market_data(
     for ticker in tickers:
         sym = ticker.upper()
 
-        # Resolve or create symbol record
         res = await db.execute(
             text("SELECT id FROM symbols WHERE UPPER(trading_symbol) = :sym LIMIT 1;"),
             {"sym": sym},
@@ -328,7 +420,6 @@ async def sync_us_etf_market_data(
             )
             symbol_id = ins.scalar()
 
-        # Check existing date in DB
         date_res = await db.execute(
             text(
                 "SELECT MAX(date) AS max_date FROM market_data_all WHERE symbol_id = :sid;"
@@ -362,12 +453,10 @@ async def sync_us_etf_market_data(
 
     logger.info(f"Queued {len(batch_queue)} ETF(s) for single-session batch sync...")
 
-    # Phase 2: Single IBKR connection call
     fetched_data = ibkr_adapter.fetch_multiple_etf_bars(
         batch_queue, delay_seconds=delay_between_calls
     )
 
-    # Phase 3: Persist fetched results
     synced_count = 0
     failed_tickers = [
         item["symbol"] for item in batch_queue if item["symbol"] not in fetched_data
@@ -427,6 +516,34 @@ async def sync_us_etf_market_data(
     }
 
 
+def run_us_etf_sync_standalone():
+    from app.db.session import AsyncSessionLocal
+
+    async def _execute():
+        async with AsyncSessionLocal() as session:
+            return await sync_us_etf_market_data(session)
+
+    return asyncio.run(_execute())
+
+
 if __name__ == "__main__":
-    seed_us_universe_from_db(max_symbols=None)
-    sync_us_etf_market_data()
+    parser = argparse.ArgumentParser(description="US Market Data Ingestion Pipeline")
+    parser.add_argument(
+        "--mode",
+        choices=["sp500", "custom"],
+        default="sp500",
+        help="Sync mode: sp500 or custom (default: sp500)",
+    )
+    parser.add_argument(
+        "--custom-file",
+        type=str,
+        default=None,
+        help="Path to custom CSV or text file containing US symbols",
+    )
+    args = parser.parse_args()
+
+    if args.mode == "custom" and args.custom_file:
+        seed_us_custom_from_file(args.custom_file)
+    else:
+        seed_us_universe_from_db(max_symbols=None)
+        run_us_etf_sync_standalone()

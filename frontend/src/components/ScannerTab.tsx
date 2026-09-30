@@ -26,7 +26,7 @@ export default function ScannerTab() {
     setError(null);
     try {
       const res = await fetch(
-        `http://localhost:8000/api/v1/scanner/run?exchange=${exchange}&strategy=${strategy}`,
+        `/api/v1/scanner/run?exchange=${exchange}&strategy=${strategy}`,
       );
       if (!res.ok) throw new Error("Failed to fetch scanner results");
       const data = await res.json();

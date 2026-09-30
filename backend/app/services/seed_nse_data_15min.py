@@ -33,7 +33,7 @@ def run_15min_ingestion_pipeline(
     lookback = default_lookback_days if default_lookback_days is not None else days
 
     if not csv_path:
-        csv_path = "data/selected_stocks.csv"
+        csv_path = "data/elder_input_us_stocks.csv"
 
     file_path = Path(csv_path)
     if not file_path.exists():

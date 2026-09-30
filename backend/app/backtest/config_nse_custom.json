@@ -37,5 +37,6 @@
     ]
   ],
   "final_exit_ma": "SMA50",
-  "ticker_filter": []
+  "ticker_filter": [],
+  "ticker_filter_file":"C:/Work/SignalDesk/data/evergreen_filter_nse_stocks.csv"
 }

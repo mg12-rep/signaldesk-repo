@@ -9,8 +9,9 @@ import {
   Database,
   Wallet,
   AlertTriangle,
-  Layers,
+  FileSpreadsheet,
   Clock,
+  Layers,
 } from "lucide-react";
 
 interface AccountBalance {
@@ -42,7 +43,14 @@ interface DashboardSummary {
   market_health: MarketHealthItem[];
 }
 
-type SyncTarget = "NSE_DAILY" | "US_DAILY" | "US_ETFS" | "NSE_5M" | "US_5M";
+type SyncTarget =
+  | "NSE_DAILY"
+  | "US_DAILY"
+  | "US_ETFS"
+  | "NSE_CUSTOM"
+  | "US_CUSTOM"
+  | "NSE_5M"
+  | "US_5M";
 
 export default function DashboardPage() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
@@ -53,7 +61,7 @@ export default function DashboardPage() {
   const fetchDashboardData = async () => {
     setLoading(true);
     try {
-      const res = await fetch("http://localhost:8000/api/v1/dashboard/summary");
+      const res = await fetch("/api/v1/dashboard/summary");
       if (res.ok) {
         const data = await res.json();
         setSummary(data);
@@ -74,23 +82,32 @@ export default function DashboardPage() {
     setStatusMsg(null);
 
     let endpoint = "";
-    if (target === "NSE_DAILY")
-      endpoint = "http://localhost:8000/api/v1/sync/nse/daily?full_seed=false";
-    if (target === "US_DAILY")
-      endpoint = "http://localhost:8000/api/v1/sync/us/daily";
-    if (target === "US_ETFS")
-      endpoint = "http://localhost:8000/api/v1/sync/us-etfs";
+    if (target === "NSE_DAILY") {
+      endpoint = "/api/v1/sync/nse/daily?full_seed=false";
+    }
+    if (target === "US_DAILY") {
+      endpoint = "/api/v1/sync/us/daily";
+    }
+    
+    if (target === "US_ETFS") {
+        endpoint = "/api/v1/sync/us-etfs";    
+    }
+
+    if (target === "NSE_CUSTOM") {
+      const path = encodeURIComponent("C:/Work/signaldesk/data/evergreen_filter_nse_stocks.csv");
+      endpoint = `/api/v1/sync/nse/custom?csv_path=${path}`;
+    }
+    if (target === "US_CUSTOM") {
+      const path = encodeURIComponent("C:/Work/signaldesk/data/evergreen_filter_us_stocks.csv");
+      endpoint = `/api/v1/sync/us/custom?csv_path=${path}`;
+    }
     if (target === "NSE_5M") {
-      const path = encodeURIComponent(
-        "C:/work/signaldesk/data/elder_input_nse_stocks.csv",
-      );
-      endpoint = `http://localhost:8000/api/v1/sync/nse/5min?csv_path=${path}&days=60`;
+      const path = encodeURIComponent("C:/Work/signaldesk/data/elder_input_nse_stocks.csv");
+      endpoint = `/api/v1/sync/nse/5min?csv_path=${path}&days=60`;
     }
     if (target === "US_5M") {
-      const path = encodeURIComponent(
-        "C:/work/signaldesk/data/elder_input_us_stocks.csv",
-      );
-      endpoint = `http://localhost:8000/api/v1/sync/us/5min?csv_path=${path}&days=60`;
+      const path = encodeURIComponent("C:/Work/signaldesk/data/elder_input_us_stocks.csv");
+      endpoint = `/api/v1/sync/us/5min?csv_path=${path}&days=60`;
     }
 
     try {
@@ -126,79 +143,102 @@ export default function DashboardPage() {
             Executive Dashboard
           </h1>
           <p className="text-xs text-slate-400 mt-1">
-            Multi-broker account telemetry, risk budget, and market health
-            regimes
+            Multi-broker account telemetry, risk budget, and market health regimes
           </p>
         </div>
 
         {/* Sync Controls Toolbar */}
         <div className="flex flex-wrap items-center gap-2">
-          {/* Daily Sync Group */}
+          {/* Daily Universe Sync Group (Nifty 500 & S&P 500 from DB) */}
           <div className="flex items-center bg-slate-950 p-1 rounded-lg border border-slate-800 gap-1">
             <button
               onClick={() => triggerSync("NSE_DAILY")}
               disabled={syncingTarget !== null}
+              title="Syncs Nifty 500 constituents from DB via Upstox"
               className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 px-2.5 py-1 rounded text-xs font-medium transition disabled:opacity-50"
             >
               <Database
                 className={`h-3.5 w-3.5 text-blue-400 ${syncingTarget === "NSE_DAILY" ? "animate-spin" : ""}`}
               />
-              <span>
-                {syncingTarget === "NSE_DAILY" ? "Syncing..." : "NSE Daily"}
-              </span>
+              <span>{syncingTarget === "NSE_DAILY" ? "Syncing..." : "NSE Daily"}</span>
             </button>
 
             <button
               onClick={() => triggerSync("US_DAILY")}
               disabled={syncingTarget !== null}
+              title="Syncs S&P 500 & ETFs from DB via IBKR"
               className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 px-2.5 py-1 rounded text-xs font-medium transition disabled:opacity-50"
             >
               <RefreshCw
                 className={`h-3.5 w-3.5 text-emerald-400 ${syncingTarget === "US_DAILY" ? "animate-spin" : ""}`}
               />
-              <span>
-                {syncingTarget === "US_DAILY" ? "Syncing..." : "US Daily"}
-              </span>
+              <span>{syncingTarget === "US_DAILY" ? "Syncing..." : "US Daily"}</span>
             </button>
 
             <button
               onClick={() => triggerSync("US_ETFS")}
               disabled={syncingTarget !== null}
+              title="Syncs global/US ETFs via IBKR"
               className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 px-2.5 py-1 rounded text-xs font-medium transition disabled:opacity-50"
             >
               <Layers
                 className={`h-3.5 w-3.5 text-purple-400 ${syncingTarget === "US_ETFS" ? "animate-spin" : ""}`}
               />
-              <span>{syncingTarget === "US_ETFS" ? "Syncing..." : "ETFs"}</span>
+              <span>{syncingTarget === "US_ETFS" ? "Syncing..." : "US ETFs"}</span>
             </button>
           </div>
 
-          {/* Intraday 5m Elder Sync Group */}
+          {/* Custom EOD Daily Group (From disk CSV files) */}
+          <div className="flex items-center bg-slate-950 p-1 rounded-lg border border-amber-900/50 gap-1">
+            <button
+              onClick={() => triggerSync("NSE_CUSTOM")}
+              disabled={syncingTarget !== null}
+              title="Syncs custom NSE stocks daily bars from CSV file"
+              className="flex items-center gap-1.5 bg-amber-950/40 hover:bg-amber-900/60 text-amber-300 border border-amber-800/60 px-2.5 py-1 rounded text-xs font-medium transition disabled:opacity-50"
+            >
+              <FileSpreadsheet
+                className={`h-3.5 w-3.5 text-amber-400 ${syncingTarget === "NSE_CUSTOM" ? "animate-spin" : ""}`}
+              />
+              <span>{syncingTarget === "NSE_CUSTOM" ? "Syncing..." : "NSE Custom"}</span>
+            </button>
+
+            <button
+              onClick={() => triggerSync("US_CUSTOM")}
+              disabled={syncingTarget !== null}
+              title="Syncs custom US stocks daily bars from CSV file"
+              className="flex items-center gap-1.5 bg-amber-950/40 hover:bg-amber-900/60 text-amber-300 border border-amber-800/60 px-2.5 py-1 rounded text-xs font-medium transition disabled:opacity-50"
+            >
+              <FileSpreadsheet
+                className={`h-3.5 w-3.5 text-amber-400 ${syncingTarget === "US_CUSTOM" ? "animate-spin" : ""}`}
+              />
+              <span>{syncingTarget === "US_CUSTOM" ? "Syncing..." : "US Custom"}</span>
+            </button>
+          </div>
+
+          {/* Intraday 5m Sync Group */}
           <div className="flex items-center bg-slate-950 p-1 rounded-lg border border-cyan-900/50 gap-1">
             <button
               onClick={() => triggerSync("NSE_5M")}
               disabled={syncingTarget !== null}
-              title="Syncs 5m bars from elder_input_nse_stocks.csv"
+              title="Syncs 5m bars from custom CSV via Upstox"
               className="flex items-center gap-1.5 bg-cyan-950/40 hover:bg-cyan-900/60 text-cyan-300 border border-cyan-800/60 px-2.5 py-1 rounded text-xs font-medium transition disabled:opacity-50"
             >
               <Clock
                 className={`h-3.5 w-3.5 text-cyan-400 ${syncingTarget === "NSE_5M" ? "animate-spin" : ""}`}
               />
-              <span>
-                {syncingTarget === "NSE_5M" ? "Syncing..." : "NSE 5m"}
-              </span>
+              <span>{syncingTarget === "NSE_5M" ? "Syncing..." : "NSE 5min"}</span>
             </button>
 
             <button
               onClick={() => triggerSync("US_5M")}
               disabled={syncingTarget !== null}
-              title="Syncs 5m bars from elder_input_us_stocks.csv via IBKR"
+              title="Syncs 5m bars from custom CSV via IBKR"
               className="flex items-center gap-1.5 bg-cyan-950/40 hover:bg-cyan-900/60 text-cyan-300 border border-cyan-800/60 px-2.5 py-1 rounded text-xs font-medium transition disabled:opacity-50"
             >
               <Clock
                 className={`h-3.5 w-3.5 text-cyan-400 ${syncingTarget === "US_5M" ? "animate-spin" : ""}`}
               />
-              <span>{syncingTarget === "US_5M" ? "Syncing..." : "US 5m"}</span>
+              <span>{syncingTarget === "US_5M" ? "Syncing..." : "US 5min"}</span>
             </button>
           </div>
         </div>
@@ -264,9 +304,7 @@ export default function DashboardPage() {
           </div>
           <div className="text-xl font-bold font-mono text-white">
             {summary?.candidates_count}{" "}
-            <span className="text-xs text-slate-400 font-normal">
-              Actionable
-            </span>
+            <span className="text-xs text-slate-400 font-normal">Actionable</span>
           </div>
           <Link
             href="/scanners"
@@ -348,8 +386,7 @@ export default function DashboardPage() {
               Market Regime & Health Monitor
             </h2>
             <p className="text-[11px] text-slate-400">
-              Trend template regime checks (SMA 50 &gt; SMA 200) controlling new
-              buy authorizations
+              Trend template regime checks (SMA 50 &gt; SMA 200) controlling new buy authorizations
             </p>
           </div>
         </div>
@@ -381,7 +418,9 @@ export default function DashboardPage() {
                   })}
                 </span>
                 <span
-                  className={`text-xs font-mono font-medium flex items-center ${idx.change_pct >= 0 ? "text-emerald-400" : "text-rose-400"}`}
+                  className={`text-xs font-mono font-medium flex items-center ${
+                    idx.change_pct >= 0 ? "text-emerald-400" : "text-rose-400"
+                  }`}
                 >
                   {idx.change_pct >= 0 ? "+" : ""}
                   {idx.change_pct}%

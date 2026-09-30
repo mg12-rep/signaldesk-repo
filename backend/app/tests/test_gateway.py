@@ -1,4 +1,4 @@
-from ib_insync import IB, Stock
+from ib_async import IB, Stock
 
 
 def test_connection():

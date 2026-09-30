@@ -7,6 +7,7 @@ import {
   CandlestickSeries,
   LineSeries,
   HistogramSeries,
+  LineStyle,
 } from "lightweight-charts";
 import { X, Loader2 } from "lucide-react";
 
@@ -19,6 +20,8 @@ interface Elder75mChartModalProps {
 
 interface ChartPayload {
   symbol: string;
+  pwh?: any[];
+  pmh?: any[];
   candles: any[];
   ema8: any[];
   ema21: any[];
@@ -52,7 +55,7 @@ export default function Elder75mChartModal({
     const fetchAndRender = async () => {
       try {
         const res = await fetch(
-          `http://localhost:8000/api/v1/market-data/chart-data/75min?symbol=${symbol}&market=${market}`,
+          `/api/v1/market-data/chart-data/75min?symbol=${symbol}&market=${market}`,
         );
         if (!res.ok) {
           throw new Error(`Failed to load chart data for ${symbol}`);
@@ -82,7 +85,7 @@ export default function Elder75mChartModal({
           rightPriceScale: {
             scaleMargins: {
               top: 0.1,
-              bottom: 0.25, // Leaves the bottom 25% clear for the volume pane
+              bottom: 0.25,
             },
           },
           localization: {
@@ -132,76 +135,115 @@ export default function Elder75mChartModal({
         });
         candleSeries.setData(data.candles);
 
-        // 2. Overlaid Moving Averages
+        // 2. Previous Week High (PWH)
+        if (data.pwh?.length) {
+          const pwhSeries = chart.addSeries(LineSeries, {
+            color: "#38bdf8", // Sky Blue
+            lineWidth: 2,
+            lineStyle: LineStyle.Dotted,
+            title: "PWH",
+            priceLineVisible: false,
+            lastValueVisible: true,
+          });
+          pwhSeries.setData(data.pwh);
+        }
+
+        // 3. Previous Month High (PMH)
+        if (data.pmh?.length) {
+          const pmhSeries = chart.addSeries(LineSeries, {
+            color: "#22c55e", // Bright Green
+            lineWidth: 2,
+            lineStyle: LineStyle.Dotted,
+            title: "PMH",
+            priceLineVisible: false,
+            lastValueVisible: true,
+          });
+          pmhSeries.setData(data.pmh);
+        }
+
+        // 4. Overlaid Moving Averages (Disabled priceLineVisible to clear horizontal clutter)
         if (data.ema8?.length) {
           const ema8 = chart.addSeries(LineSeries, {
-            color: "#f97316", // Orange
+            color: "#f97316",
             lineWidth: 1,
             title: "EMA 8",
+            priceLineVisible: false,
+            lastValueVisible: false,
           });
           ema8.setData(data.ema8);
         }
 
         if (data.ema21?.length) {
           const ema21 = chart.addSeries(LineSeries, {
-            color: "#a855f7", // Purple
+            color: "#a855f7",
             lineWidth: 1,
             title: "EMA 21",
+            priceLineVisible: false,
+            lastValueVisible: false,
           });
           ema21.setData(data.ema21);
         }
 
         if (data.sma50?.length) {
           const sma50 = chart.addSeries(LineSeries, {
-            color: "#60a5fa", // Light Blue
+            color: "#60a5fa",
             lineWidth: 2,
             title: "SMA 50",
+            priceLineVisible: false,
+            lastValueVisible: false,
           });
           sma50.setData(data.sma50);
         }
 
         if (data.sma150?.length) {
           const sma150 = chart.addSeries(LineSeries, {
-            color: "#22c55e", // Green
+            color: "#22c55e",
             lineWidth: 2,
             title: "SMA 150",
+            priceLineVisible: false,
+            lastValueVisible: false,
           });
           sma150.setData(data.sma150);
         }
 
         if (data.sma200?.length) {
           const sma200 = chart.addSeries(LineSeries, {
-            color: "#ef4444", // Red
+            color: "#ef4444",
             lineWidth: 2,
             title: "SMA 200",
+            priceLineVisible: false,
+            lastValueVisible: false,
           });
           sma200.setData(data.sma200);
         }
 
-        // 3. Volume Sub-Pane (Histogram + Blue 20 SMA Line)
+        // 5. Volume Sub-Pane
         if (data.volume?.length) {
           const volumeSeries = chart.addSeries(HistogramSeries, {
-            priceScaleId: "", // Sets as an overlay scale
+            priceScaleId: "",
             priceFormat: {
               type: "volume",
             },
+            priceLineVisible: false,
+            lastValueVisible: false,
           });
           volumeSeries.setData(data.volume);
 
-          // Apply bottom 20% scale margins directly via the series instance
           volumeSeries.priceScale().applyOptions({
             scaleMargins: {
-              top: 0.8, // Pushes volume bars down to the bottom 20% of the chart
+              top: 0.8,
               bottom: 0,
             },
           });
 
           if (data.vol_sma20?.length) {
             const volSmaSeries = chart.addSeries(LineSeries, {
-              priceScaleId: "", // Shares the same overlay price scale
-              color: "#2563eb", // Solid Royal Blue
+              priceScaleId: "",
+              color: "#2563eb",
               lineWidth: 2,
               title: "Vol SMA 20",
+              priceLineVisible: false,
+              lastValueVisible: false,
               priceFormat: {
                 type: "volume",
               },
@@ -275,6 +317,14 @@ export default function Elder75mChartModal({
               <span className="flex items-center gap-1">
                 <span className="h-2 w-2 rounded-full bg-rose-500 inline-block" />{" "}
                 SMA 200
+              </span>
+              <span className="flex items-center gap-1 border-l border-slate-700 pl-2">
+                <span className="h-0.5 w-3 border-t-2 border-dotted border-sky-400 inline-block" />{" "}
+                PWH
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="h-0.5 w-3 border-t-2 border-dotted border-emerald-500 inline-block" />{" "}
+                PMH
               </span>
               <span className="flex items-center gap-1 border-l border-slate-700 pl-2">
                 <span className="h-2 w-2 rounded-full bg-blue-600 inline-block" />{" "}

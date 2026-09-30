@@ -104,7 +104,7 @@ export default function HoldingsPage() {
     setReconMessage(null);
     try {
       const res = await fetch(
-        `http://localhost:8000/api/v1/holdings/data?broker=${selectedBroker}&strategy=${selectedStrategy}`,
+        `/api/v1/holdings/data?broker=${selectedBroker}&strategy=${selectedStrategy}`,
       );
       if (res.ok) {
         const json = await res.json();
@@ -122,7 +122,7 @@ export default function HoldingsPage() {
     setSyncing(true);
     try {
       const res = await fetch(
-        `http://localhost:8000/api/v1/holdings/sync/${selectedBroker}?strategy=${selectedStrategy}`,
+        `/api/v1/holdings/sync/${selectedBroker}?strategy=${selectedStrategy}`,
         { method: "POST" },
       );
       if (res.ok) {
@@ -153,7 +153,7 @@ export default function HoldingsPage() {
 
     try {
       const res = await fetch(
-        "http://localhost:8000/api/v1/holdings/upload-csv",
+        "/api/v1/holdings/upload-csv",
         {
           method: "POST",
           body: formData,
@@ -179,7 +179,7 @@ export default function HoldingsPage() {
     setReconMessage(null);
     try {
       const res = await fetch(
-        `http://localhost:8000/api/v1/holdings/run-exit-recon?broker=${selectedBroker}&strategy=${selectedStrategy}`,
+        `/api/v1/holdings/run-exit-recon?broker=${selectedBroker}&strategy=${selectedStrategy}`,
         { method: "POST" },
       );
 

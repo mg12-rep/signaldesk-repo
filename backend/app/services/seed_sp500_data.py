@@ -10,7 +10,7 @@ import pandas as pd
 import requests
 from app.services.ingest_market_data import get_or_create_symbol_id
 from dotenv import load_dotenv
-from ib_insync import IB, Stock, util
+from ib_async import IB, Stock, util
 from sqlalchemy import create_engine, text
 
 load_dotenv()

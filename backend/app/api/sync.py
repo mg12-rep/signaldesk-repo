@@ -3,8 +3,12 @@ from typing import Any, Dict, List, Optional
 
 from app.db.session import get_db
 from app.services.ingest_data import run_eod_pipeline
-from app.services.seed_nse_data import get_all_active_symbols, run_full_universe_sync
-from app.services.seed_us_data import seed_us_universe_from_db, sync_us_etf_market_data
+from app.services.seed_nse_data import get_nifty500_symbols, run_sync
+from app.services.seed_us_data import (
+    seed_us_custom_from_file,
+    seed_us_universe_from_db,
+    sync_us_etf_market_data,
+)
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,16 +28,31 @@ class SyncResponse(BaseModel):
 # ----------------------------------------------------------------------
 # Background Runners
 # ----------------------------------------------------------------------
-def background_nse_daily_sync(symbols: Optional[List[str]] = None):
-    logger.info("🚀 [NSE DAILY] Starting EOD delta ingestion...")
+def background_nse_daily_sync(full_seed: bool = False, workers: int = 8):
+    logger.info("🚀 [NSE DAILY] Starting Nifty 500 ingestion...")
     try:
-        if symbols:
-            run_eod_pipeline(symbols)
-        else:
-            run_full_universe_sync(full_seed_years=2, max_workers=8)
-        logger.info("✅ [NSE DAILY] Ingestion finished successfully.")
+        run_sync(
+            mode="nifty500",
+            full_seed_years=2 if full_seed else 1,
+            max_workers=workers,
+        )
+        logger.info("✅ [NSE DAILY] Nifty 500 ingestion finished successfully.")
     except Exception as e:
         logger.error(f"❌ [NSE DAILY FAILED] Error: {e}", exc_info=True)
+
+
+def background_nse_custom_sync(csv_path: str, workers: int = 8):
+    logger.info(f"🚀 [NSE CUSTOM] Starting ingestion from file: {csv_path}...")
+    try:
+        run_sync(
+            mode="custom",
+            custom_file=csv_path,
+            full_seed_years=2,
+            max_workers=workers,
+        )
+        logger.info("✅ [NSE CUSTOM] Ingestion finished successfully.")
+    except Exception as e:
+        logger.error(f"❌ [NSE CUSTOM FAILED] Error: {e}", exc_info=True)
 
 
 def background_nse_5min_sync(csv_path: Optional[str] = None, days: int = 60):
@@ -51,21 +70,6 @@ def background_nse_5min_sync(csv_path: Optional[str] = None, days: int = 60):
         logger.error(f"❌ [NSE 5MIN FAILED] Error: {e}", exc_info=True)
 
 
-def background_nse_15min_sync(csv_path: Optional[str] = None, days: int = 90):
-    logger.info(
-        f"🚀 [NSE 15MIN] Starting 15-minute ingestion (CSV: {csv_path}, Lookback: {days}d)..."
-    )
-    try:
-        from app.services.seed_nse_data_15min import run_15min_ingestion_pipeline
-
-        run_15min_ingestion_pipeline(csv_path=csv_path, days=days)
-        logger.info("✅ [NSE 15MIN] Ingestion finished successfully.")
-    except ImportError:
-        logger.error("❌ [NSE 15MIN] app.services.seed_nse_data_15min not found.")
-    except Exception as e:
-        logger.error(f"❌ [NSE 15MIN FAILED] Error: {e}", exc_info=True)
-
-
 def background_us_daily_sync():
     logger.info("🚀 [US DAILY] Starting US & Global market data sync via TWS/IBKR...")
     try:
@@ -73,6 +77,15 @@ def background_us_daily_sync():
         logger.info("✅ [US DAILY] S&P 500 & US ETF sync complete.")
     except Exception as e:
         logger.error(f"❌ [US DAILY FAILED] Error: {e}", exc_info=True)
+
+
+def background_us_custom_sync(csv_path: str):
+    logger.info(f"🚀 [US CUSTOM] Starting ingestion from file: {csv_path}...")
+    try:
+        seed_us_custom_from_file(csv_path)
+        logger.info("✅ [US CUSTOM] Ingestion finished successfully.")
+    except Exception as e:
+        logger.error(f"❌ [US CUSTOM FAILED] Error: {e}", exc_info=True)
 
 
 def background_us_5min_sync(csv_path: Optional[str] = None, days: int = 60):
@@ -90,21 +103,6 @@ def background_us_5min_sync(csv_path: Optional[str] = None, days: int = 60):
         logger.error(f"❌ [US 5MIN FAILED] Error: {e}", exc_info=True)
 
 
-def background_us_15min_sync(csv_path: Optional[str] = None, days: int = 90):
-    logger.info(
-        f"🚀 [US 15MIN] Starting US 15-minute ingestion (CSV: {csv_path}, Lookback: {days}d)..."
-    )
-    try:
-        from app.services.seed_us_data_15min import run_us_15min_ingestion_pipeline
-
-        run_us_15min_ingestion_pipeline(csv_path=csv_path, days=days)
-        logger.info("✅ [US 15MIN] Ingestion finished successfully.")
-    except ImportError:
-        logger.error("❌ [US 15MIN] app.services.seed_us_data_15min not found.")
-    except Exception as e:
-        logger.error(f"❌ [US 15MIN FAILED] Error: {e}", exc_info=True)
-
-
 # ----------------------------------------------------------------------
 # NSE Endpoints
 # ----------------------------------------------------------------------
@@ -117,24 +115,37 @@ def trigger_nse_daily_sync(
     ),
     workers: int = Query(default=8, ge=1, le=16),
 ):
-    """Syncs daily candles into market_data_all."""
-    symbols = get_all_active_symbols()
+    """Syncs Nifty 500 daily candles from database registry into market_data_eod."""
+    symbols = get_nifty500_symbols()
     count = len(symbols)
 
-    if full_seed:
-        background_tasks.add_task(
-            run_full_universe_sync, full_seed_years=2, max_workers=workers
-        )
-        mode = "Full 2-Year Seeding"
-    else:
-        symbol_list = [s["trading_symbol"] for s in symbols]
-        background_tasks.add_task(background_nse_daily_sync, symbols=symbol_list)
-        mode = "Daily EOD Delta Sync"
+    background_tasks.add_task(
+        background_nse_daily_sync, full_seed=full_seed, workers=workers
+    )
 
     return SyncResponse(
         status="SUCCESS",
-        message=f"{mode} started in background for {count} NSE symbols.",
+        message=f"Nifty 500 daily ingestion started in background for {count} constituents.",
         symbol_count=count,
+    )
+
+
+@router.post("/nse/custom", response_model=SyncResponse)
+def trigger_nse_custom_sync(
+    background_tasks: BackgroundTasks,
+    csv_path: str = Query(
+        default="data/evergreen_filter_nse_stocks.csv",
+        description="Path to CSV containing custom NSE symbols",
+    ),
+    workers: int = Query(default=8, ge=1, le=16),
+):
+    """Syncs daily candles for custom NSE stocks specified in a local CSV/text file."""
+    background_tasks.add_task(
+        background_nse_custom_sync, csv_path=csv_path, workers=workers
+    )
+    return SyncResponse(
+        status="SUCCESS",
+        message=f"NSE custom daily ingestion started for symbols in '{csv_path}'.",
     )
 
 
@@ -142,7 +153,7 @@ def trigger_nse_daily_sync(
 def trigger_nse_5min_sync(
     background_tasks: BackgroundTasks,
     csv_path: Optional[str] = Query(
-        default="data/selected_stocks.csv",
+        default="data/elder_input_nse_stocks.csv",
         description="Path to CSV containing pre-selected stock symbols",
     ),
     days: int = Query(
@@ -156,29 +167,7 @@ def trigger_nse_5min_sync(
     background_tasks.add_task(background_nse_5min_sync, csv_path=csv_path, days=days)
     return SyncResponse(
         status="SUCCESS",
-        message=f"5-minute ingestion started in background for stocks in '{csv_path}' ({days} days lookback).",
-    )
-
-
-@router.post("/nse/15min", response_model=SyncResponse)
-def trigger_nse_15min_sync(
-    background_tasks: BackgroundTasks,
-    csv_path: Optional[str] = Query(
-        default="data/selected_stocks.csv",
-        description="Path to CSV containing pre-selected stock symbols",
-    ),
-    days: int = Query(
-        default=90,
-        ge=1,
-        le=90,
-        description="Lookback window in days (Upstox limit: 90 days)",
-    ),
-):
-    """Syncs 15-minute intraday candles into market_data_eod_15min (legacy fallback)."""
-    background_tasks.add_task(background_nse_15min_sync, csv_path=csv_path, days=days)
-    return SyncResponse(
-        status="SUCCESS",
-        message=f"15-minute ingestion started in background for stocks in '{csv_path}' ({days} days lookback).",
+        message=f"NSE 5-minute ingestion started for stocks in '{csv_path}' ({days} days lookback).",
     )
 
 
@@ -188,11 +177,48 @@ def trigger_nse_15min_sync(
 @router.post("/us/daily", response_model=SyncResponse)
 @router.post("/us", response_model=SyncResponse)
 def trigger_us_sync(background_tasks: BackgroundTasks):
-    """Triggers complete US Universe daily pipeline (S&P 500 + US ETFs) via TWS in background."""
+    """Triggers S&P 500 + US ETFs daily pipeline via TWS in background."""
     background_tasks.add_task(background_us_daily_sync)
     return SyncResponse(
         status="SUCCESS",
         message="S&P 500 + US ETF daily ingestion started in background via TWS.",
+    )
+
+
+@router.post("/us-etfs")
+async def sync_us_etfs_endpoint(
+    csv_path: str = Query(
+        default="C:/Work/signaldesk/data/US_ETF_Tickers.csv",
+        description="Path to CSV containing ETF tickers",
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    """Direct sync for US ETFs using an active database session."""
+    try:
+        result = await sync_us_etf_market_data(db, csv_path=csv_path)
+        return {
+            "status": "success",
+            "message": f"US ETFs sync finished: {result.get('synced', 0)} synced, {result.get('skipped', 0)} skipped, {len(result.get('failed', []))} failed.",
+            "result": result,
+        }
+    except Exception as e:
+        logger.error(f"❌ Error during US ETF sync: {e}", exc_info=True)
+        return {"status": "error", "message": str(e)}
+
+
+@router.post("/us/custom", response_model=SyncResponse)
+def trigger_us_custom_sync(
+    background_tasks: BackgroundTasks,
+    csv_path: str = Query(
+        default="data/evergreen_filter_us_stocks.csv",
+        description="Path to CSV containing custom US symbols",
+    ),
+):
+    """Syncs daily candles for custom US stocks specified in a local CSV/text file."""
+    background_tasks.add_task(background_us_custom_sync, csv_path=csv_path)
+    return SyncResponse(
+        status="SUCCESS",
+        message=f"US custom daily ingestion started for symbols in '{csv_path}'.",
     )
 
 
@@ -214,37 +240,8 @@ def trigger_us_5min_sync(
     background_tasks.add_task(background_us_5min_sync, csv_path=csv_path, days=days)
     return SyncResponse(
         status="SUCCESS",
-        message=f"US 5-minute ingestion started in background for stocks in '{csv_path}' ({days} days lookback).",
+        message=f"US 5-minute ingestion started for stocks in '{csv_path}' ({days} days lookback).",
     )
-
-
-@router.post("/us/15min", response_model=SyncResponse)
-def trigger_us_15min_sync(
-    background_tasks: BackgroundTasks,
-    csv_path: Optional[str] = Query(
-        default="data/selected_us_stocks.csv",
-        description="Path to CSV containing pre-selected US stock symbols",
-    ),
-    days: int = Query(
-        default=90,
-        ge=1,
-        le=365,
-        description="Lookback window in days (IBKR supports up to 365d for 15-min bars)",
-    ),
-):
-    """Syncs 15-minute intraday candles into market_data_eod_15min via IBKR (legacy fallback)."""
-    background_tasks.add_task(background_us_15min_sync, csv_path=csv_path, days=days)
-    return SyncResponse(
-        status="SUCCESS",
-        message=f"US 15-minute ingestion started in background for stocks in '{csv_path}' ({days} days lookback).",
-    )
-
-
-@router.post("/us-etfs")
-async def sync_us_etfs_endpoint(db: AsyncSession = Depends(get_db)):
-    """Synchronous/async direct sync for US ETFs using an active DB session."""
-    result = await sync_us_etf_market_data(db)
-    return {"status": "success", "result": result}
 
 
 class TargetedSyncRequest(BaseModel):
