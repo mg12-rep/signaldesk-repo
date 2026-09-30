@@ -3,8 +3,8 @@ import concurrent.futures
 import csv
 import logging
 import os
-from pathlib import Path
 import time
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from app.services.ingest_data import archive_older_bars, ingest_stock_bars
@@ -104,13 +104,12 @@ def load_symbols_from_file(file_path: str) -> List[Dict]:
     return valid_symbols
 
 
-def _process_single_symbol(
-    item: Dict, full_seed_years: int
-) -> tuple[str, str, int]:
+def _process_single_symbol(item: Dict, full_seed_years: int) -> tuple[str, str, int]:
     """Worker task executed by thread pool."""
     sym = item["trading_symbol"]
     is_index = item.get("is_index", False)
     try:
+        time.sleep(0.15)
         bars_count = ingest_stock_bars(
             symbol=sym,
             is_index=is_index,
@@ -135,14 +134,10 @@ def run_sync(
     """Executes either Nifty 500 universe or custom CSV file sync."""
     if mode == "custom" and custom_file:
         symbols = load_symbols_from_file(custom_file)
-        logger.info(
-            f"📁 Loaded {len(symbols)} symbols from custom file: {custom_file}"
-        )
+        logger.info(f"📁 Loaded {len(symbols)} symbols from custom file: {custom_file}")
     elif mode == "nifty500":
         symbols = get_nifty500_symbols()
-        logger.info(
-            f"🇮🇳 Loaded {len(symbols)} Nifty 500 constituents from database."
-        )
+        logger.info(f"🇮🇳 Loaded {len(symbols)} Nifty 500 constituents from database.")
     else:
         logger.error(f"Unknown mode '{mode}' or missing custom file.")
         return
@@ -161,13 +156,11 @@ def run_sync(
     skipped_count = 0
     failed_count = 0
 
-    with concurrent.futures.ThreadPoolExecutor(
-        max_workers=max_workers
-    ) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_symbol = {
-            executor.submit(
-                _process_single_symbol, item, full_seed_years
-            ): item["trading_symbol"]
+            executor.submit(_process_single_symbol, item, full_seed_years): item[
+                "trading_symbol"
+            ]
             for item in symbols
         }
 
@@ -223,7 +216,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--workers",
         type=int,
-        default=8,
+        default=3,
         help="Number of concurrent worker threads",
     )
     args = parser.parse_args()

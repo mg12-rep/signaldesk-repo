@@ -3,6 +3,7 @@ import os
 import time
 from datetime import date, datetime, timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from app.services.brokers.upstox_adapter import upstox_adapter
@@ -99,21 +100,63 @@ def get_latest_trade_date(symbol_id: int) -> Optional[date]:
 def fetch_bars_window(
     instrument_key: str, from_date: date, to_date: date
 ) -> pd.DataFrame:
-    """Fetches Upstox candles in chunks up to 365 days each."""
-    if from_date >= to_date:
+    """Fetches Upstox candles efficiently with rate-limit protection."""
+    if from_date > to_date:
         return pd.DataFrame()
 
+    today = datetime.now().date()
+
+    # Fast path for daily delta: if only fetching today, synthesize directly from intraday (1 API call)
+    if from_date == today and to_date == today:
+        try:
+            df_intra = upstox_adapter.fetch_intraday_candles(
+                instrument_key, interval="5minute"
+            )
+            if df_intra.empty:
+                return pd.DataFrame()
+
+            df_sorted = df_intra.sort_values("ts")
+            return pd.DataFrame(
+                [
+                    {
+                        "open": float(df_sorted.iloc[0]["open"]),
+                        "high": float(df_sorted["high"].max()),
+                        "low": float(df_sorted["low"].min()),
+                        "close": float(df_sorted.iloc[-1]["close"]),
+                        "adj_close": float(df_sorted.iloc[-1]["close"]),
+                        "volume": int(df_sorted["volume"].sum()),
+                        "date": today,
+                    }
+                ]
+            )
+        except Exception as e:
+            logger.warning(f"Failed intraday synthesis for {instrument_key}: {e}")
+            return pd.DataFrame()
+
+    # For multi-day delta within 365 days
+    days_span = (to_date - from_date).days + 5
+    if days_span <= 365:
+        df = upstox_adapter.fetch_historical_daily(instrument_key, days=days_span)
+        if df.empty:
+            return pd.DataFrame()
+        if "trade_date" in df.columns and "date" not in df.columns:
+            df.rename(columns={"trade_date": "date"}, inplace=True)
+        if "adj_close" not in df.columns:
+            df["adj_close"] = df["close"]
+        return df[(df["date"] >= from_date) & (df["date"] <= to_date)].reset_index(
+            drop=True
+        )
+
+    # Multi-year historical backfill chunking...
     all_chunks = []
     curr_to = to_date
-
-    while curr_to > from_date:
+    while curr_to >= from_date:
         curr_from = max(from_date, curr_to - timedelta(days=365))
         url = f"https://api.upstox.com/v2/historical-candle/{instrument_key}/day/{curr_to.strftime('%Y-%m-%d')}/{curr_from.strftime('%Y-%m-%d')}"
         headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {os.getenv('UPSTOX_ACCESS_TOKEN')}",
         }
-
         resp = upstox_adapter._execute_request_with_retry("GET", url, headers)
         if resp and resp.status_code == 200:
             candles = resp.json().get("data", {}).get("candles", [])
@@ -134,16 +177,16 @@ def fetch_bars_window(
                 df_chunk["adj_close"] = df_chunk["close"]
                 df_chunk.drop(columns=["timestamp", "oi"], inplace=True)
                 all_chunks.append(df_chunk)
-
         curr_to = curr_from - timedelta(days=1)
-        time.sleep(0.08)
+        time.sleep(0.1)
 
     if not all_chunks:
         return pd.DataFrame()
 
-    full_df = pd.concat(all_chunks, ignore_index=True)
-    full_df.drop_duplicates(subset=["date"], inplace=True)
-    return full_df
+    full_df = pd.concat(all_chunks, ignore_index=True).drop_duplicates(subset=["date"])
+    return full_df[
+        (full_df["date"] >= from_date) & (full_df["date"] <= to_date)
+    ].reset_index(drop=True)
 
 
 def archive_older_bars():
@@ -200,7 +243,8 @@ def ingest_stock_bars(
         return 0
 
     latest_date = get_latest_trade_date(symbol_id)
-    today = datetime.now().date()
+    kolkata_tz = ZoneInfo("Asia/Kolkata")
+    today = datetime.now(tz=kolkata_tz).date()
 
     if latest_date is None:
         from_date = today - timedelta(days=full_seed_years * 365)
@@ -208,10 +252,10 @@ def ingest_stock_bars(
             f"Seeding full {full_seed_years}-year data for {symbol} ({from_date} to {today})..."
         )
     else:
-        from_date = latest_date + timedelta(days=1)
-        if from_date >= today:
+        if latest_date >= today:
             logger.info(f"⚡ {symbol} is already up to date (Latest: {latest_date}).")
             return 0
+        from_date = latest_date + timedelta(days=1)
         logger.info(f"🔄 Delta syncing {symbol} from {from_date} to {today}...")
 
     df = fetch_bars_window(

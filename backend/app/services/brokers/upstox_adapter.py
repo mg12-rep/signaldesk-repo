@@ -3,6 +3,7 @@ import os
 import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -287,24 +288,76 @@ class UpstoxAdapter(BaseBrokerAdapter):
     def fetch_historical_daily(
         self, instrument_key: str, days: int = 365
     ) -> pd.DataFrame:
-        to_date = datetime.now().strftime("%Y-%m-%d")
-        from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        kolkata_tz = ZoneInfo("Asia/Kolkata")
+        now_dt = datetime.now(tz=kolkata_tz)
+        to_date = now_dt.strftime("%Y-%m-%d")
+        from_date = (now_dt - timedelta(days=days)).strftime("%Y-%m-%d")
 
         url = f"{self.base_url}/historical-candle/{instrument_key}/day/{to_date}/{from_date}"
         response = self._execute_request_with_retry("GET", url)
-        if not response or response.status_code != 200:
-            return pd.DataFrame()
 
-        candles = response.json().get("data", {}).get("candles", [])
-        if not candles:
-            return pd.DataFrame()
+        frames = []
+        if response and response.status_code == 200:
+            candles = response.json().get("data", {}).get("candles", [])
+            if candles:
+                df_hist = pd.DataFrame(
+                    candles,
+                    columns=[
+                        "timestamp",
+                        "open",
+                        "high",
+                        "low",
+                        "close",
+                        "volume",
+                        "oi",
+                    ],
+                )
+                df_hist["trade_date"] = pd.to_datetime(df_hist["timestamp"]).dt.date
+                df_hist.drop(columns=["timestamp", "oi"], inplace=True)
+                frames.append(df_hist)
 
-        df = pd.DataFrame(
-            candles,
-            columns=["timestamp", "open", "high", "low", "close", "volume", "oi"],
-        )
-        df["trade_date"] = pd.to_datetime(df["timestamp"]).dt.date
-        df.drop(columns=["timestamp", "oi"], inplace=True)
+        df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+        today_date = now_dt.date()
+        has_today = not df.empty and (df["trade_date"] == today_date).any()
+
+        # Synthesize from intraday if missing on weekdays
+        if not has_today and now_dt.weekday() < 5:
+            try:
+                df_intra = self.fetch_intraday_candles(
+                    instrument_key, interval="5minute"
+                )
+                if not df_intra.empty:
+                    df_intra_sorted = df_intra.sort_values("ts")
+                    today_bar = pd.DataFrame(
+                        [
+                            {
+                                "open": float(df_intra_sorted.iloc[0]["open"]),
+                                "high": float(df_intra_sorted["high"].max()),
+                                "low": float(df_intra_sorted["low"].min()),
+                                "close": float(df_intra_sorted.iloc[-1]["close"]),
+                                "volume": int(df_intra_sorted["volume"].sum()),
+                                "trade_date": today_date,
+                            }
+                        ]
+                    )
+                    df = (
+                        pd.concat([today_bar, df], ignore_index=True)
+                        if not df.empty
+                        else today_bar
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"Could not synthesize today's daily bar from intraday for {instrument_key}: {e}"
+                )
+
+        if not df.empty:
+            df = (
+                df.drop_duplicates(subset=["trade_date"])
+                .sort_values("trade_date")
+                .reset_index(drop=True)
+            )
+
         return df
 
     def place_order(
