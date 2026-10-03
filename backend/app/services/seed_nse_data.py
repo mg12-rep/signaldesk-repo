@@ -129,7 +129,7 @@ def run_sync(
     mode: str = "nifty500",
     custom_file: Optional[str] = None,
     full_seed_years: int = 2,
-    max_workers: int = 8,
+    max_workers: int = 3,
 ):
     """Executes either Nifty 500 universe or custom CSV file sync."""
     if mode == "custom" and custom_file:

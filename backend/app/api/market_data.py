@@ -1,4 +1,6 @@
 import logging
+
+import numpy as np
 import pandas as pd
 from app.screeners.elder_scanner_75min import (
     compute_elder_impulse,
@@ -229,4 +231,191 @@ def get_elder_75min_chart_data(
         "sma200": sma200_series,
         "volume": volume_series,
         "vol_sma20": vol_sma20_series,
+    }
+
+
+@router.get("/chart-data/weinstein-weekly")
+def get_weinstein_weekly_chart_data(
+    symbol: str = Query(..., description="ETF / Stock ticker (e.g. BUG, XLK)"),
+):
+    sym = symbol.upper().strip()
+    SPY_SYMBOL_ID = 5201
+
+    with engine.connect() as conn:
+        sid_row = (
+            conn.execute(
+                text(
+                    "SELECT id FROM symbols WHERE UPPER(trading_symbol) = :sym LIMIT 1;"
+                ),
+                {"sym": sym},
+            )
+            .mappings()
+            .first()
+        )
+
+        if not sid_row:
+            raise HTTPException(status_code=404, detail=f"Symbol {sym} not found")
+
+        sid = sid_row["id"]
+
+        # Fetch daily bars for target symbol
+        bars_q = text("""
+            SELECT date AS "Date", open AS "Open", high AS "High", low AS "Low", close AS "Close", volume AS "Volume"
+            FROM market_data_all
+            WHERE symbol_id = :sid
+            ORDER BY date ASC;
+        """)
+        df_target_daily = pd.read_sql(bars_q, conn, params={"sid": sid})
+
+        # Fetch SPY daily bars for Mansfield RS
+        spy_q = text("""
+            SELECT date AS "Date", close AS "Close"
+            FROM market_data_all
+            WHERE symbol_id = :spy_id
+            ORDER BY date ASC;
+        """)
+        spy_daily = pd.read_sql(spy_q, conn, params={"spy_id": SPY_SYMBOL_ID})
+
+    if df_target_daily.empty or len(df_target_daily) < 30:
+        raise HTTPException(
+            status_code=404, detail=f"Insufficient historical data for {sym}"
+        )
+
+    # Resample target to weekly
+    df_target_daily["Date"] = pd.to_datetime(df_target_daily["Date"])
+    df_weekly = (
+        df_target_daily.set_index("Date")
+        .resample("W-FRI")
+        .agg(
+            {
+                "Open": "first",
+                "High": "max",
+                "Low": "min",
+                "Close": "last",
+                "Volume": "sum",
+            }
+        )
+        .dropna()
+        .reset_index()
+    )
+
+    # Resample SPY to weekly & compute Mansfield RS
+    if not spy_daily.empty:
+        spy_daily["Date"] = pd.to_datetime(spy_daily["Date"])
+        spy_weekly = (
+            spy_daily.set_index("Date")
+            .resample("W-FRI")
+            .agg({"Close": "last"})
+            .dropna()
+            .reset_index()
+        )
+        merged = pd.merge(
+            df_weekly,
+            spy_weekly[["Date", "Close"]],
+            on="Date",
+            suffixes=("", "_SPY"),
+            how="left",
+        )
+
+        # Forward fill or interpolate any holiday gaps
+        merged["Close_SPY"] = merged["Close_SPY"].ffill().bfill()
+
+        rel = merged["Close"] / merged["Close_SPY"]
+        # min_periods=12 allows the indicator to ramp up quickly without dropping 52 weeks of history
+        rel_sma = rel.rolling(52, min_periods=12).mean()
+        merged["MRS"] = ((rel / rel_sma) - 1.0) * 100
+        df_weekly = merged
+    else:
+        df_weekly["MRS"] = np.nan
+
+    # Moving Averages
+    df_weekly["SMA10"] = df_weekly["Close"].rolling(10).mean()
+    df_weekly["SMA30"] = df_weekly["Close"].rolling(30).mean()
+    df_weekly["SMA40"] = df_weekly["Close"].rolling(40).mean()
+
+    # MACD (12, 26, 9)
+    ema12 = df_weekly["Close"].ewm(span=12, adjust=False).mean()
+    ema26 = df_weekly["Close"].ewm(span=26, adjust=False).mean()
+    df_weekly["MACD"] = ema12 - ema26
+    df_weekly["MACD_SIGNAL"] = df_weekly["MACD"].ewm(span=9, adjust=False).mean()
+    df_weekly["MACD_HIST"] = df_weekly["MACD"] - df_weekly["MACD_SIGNAL"]
+
+    # Format for Lightweight Charts (using YYYY-MM-DD string for weekly dates)
+    candles = []
+    sma10_series = []
+    sma30_series = []
+    sma40_series = []
+    volume_series = []
+    mrs_series = []
+    macd_line = []
+    macd_signal = []
+    macd_hist = []
+
+    for _, row in df_weekly.iterrows():
+        date_str = pd.to_datetime(row["Date"]).strftime("%Y-%m-%d")
+
+        candles.append(
+            {
+                "time": date_str,
+                "open": float(row["Open"]),
+                "high": float(row["High"]),
+                "low": float(row["Low"]),
+                "close": float(row["Close"]),
+            }
+        )
+
+        if not pd.isna(row["SMA10"]):
+            sma10_series.append(
+                {"time": date_str, "value": round(float(row["SMA10"]), 2)}
+            )
+        if not pd.isna(row["SMA30"]):
+            sma30_series.append(
+                {"time": date_str, "value": round(float(row["SMA30"]), 2)}
+            )
+        if not pd.isna(row["SMA40"]):
+            sma40_series.append(
+                {"time": date_str, "value": round(float(row["SMA40"]), 2)}
+            )
+
+        vol_color = (
+            "rgba(34, 197, 94, 0.45)"
+            if row["Close"] >= row["Open"]
+            else "rgba(239, 68, 68, 0.45)"
+        )
+        volume_series.append(
+            {"time": date_str, "value": float(row["Volume"]), "color": vol_color}
+        )
+
+        if not pd.isna(row.get("MRS")):
+            mrs_series.append({"time": date_str, "value": round(float(row["MRS"]), 2)})
+
+        if not pd.isna(row["MACD"]):
+            macd_line.append({"time": date_str, "value": round(float(row["MACD"]), 2)})
+            macd_signal.append(
+                {"time": date_str, "value": round(float(row["MACD_SIGNAL"]), 2)}
+            )
+            h_color = (
+                "rgba(34, 197, 94, 0.7)"
+                if row["MACD_HIST"] >= 0
+                else "rgba(239, 68, 68, 0.7)"
+            )
+            macd_hist.append(
+                {
+                    "time": date_str,
+                    "value": round(float(row["MACD_HIST"]), 2),
+                    "color": h_color,
+                }
+            )
+
+    return {
+        "symbol": sym,
+        "candles": candles,
+        "sma10": sma10_series,
+        "sma30": sma30_series,
+        "sma40": sma40_series,
+        "volume": volume_series,
+        "mrs": mrs_series,
+        "macd": macd_line,
+        "macd_signal": macd_signal,
+        "macd_hist": macd_hist,
     }

@@ -156,7 +156,37 @@ def run_scanner_pipeline(
     # Stan Weinstein US ETF Screener Dispatch
     # -------------------------------------------------------------
     if strategy == "weinstein_etf":
-        raw_candidates = run_weinstein_etf_screener()
+        custom_tickers: Optional[List[str]] = None
+        total_universe_count = 296
+
+        if mode == "CUSTOM_FILE":
+            if not custom_path or not os.path.exists(custom_path):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Custom CSV file not found: {custom_path}",
+                )
+            try:
+                df_custom = pd.read_csv(custom_path)
+                # Auto-detect ticker column or take first column
+                col_name = next(
+                    (
+                        c
+                        for c in df_custom.columns
+                        if c.lower() in ("ticker", "symbol", "trading_symbol")
+                    ),
+                    df_custom.columns[0],
+                )
+                custom_tickers = (
+                    df_custom[col_name].dropna().astype(str).str.strip().tolist()
+                )
+                total_universe_count = len(custom_tickers)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Error reading custom CSV: {e}",
+                )
+
+        raw_candidates = run_weinstein_etf_screener(ticker_list=custom_tickers)
 
         stage2_buys: List[SignalItem] = []
         stage1_watchlist: List[SignalItem] = []
@@ -165,8 +195,11 @@ def run_scanner_pipeline(
 
         for item in raw_candidates:
             stage_tag = item.get("stage", "STAGE_2_CONTINUATION")
-            close_px = item["close"]
-            hard_stop_px = item.get("hard_stop", round(close_px * 0.92, 2))
+            close_px = item.get("close", item.get("current_price", 0.0))
+            hard_stop_px = item.get(
+                "weinstein_stop", item.get("hard_stop", round(close_px * 0.92, 2))
+            )
+            res_px = item.get("breakout_level", item.get("resistance", close_px))
 
             sig = SignalItem(
                 status="BUY_TODAY"
@@ -174,12 +207,14 @@ def run_scanner_pipeline(
                 else "WATCHLIST",
                 ticker=item["symbol"],
                 date=pd.Timestamp.today().strftime("%Y-%m-%d"),
-                trigger_price=item.get("resistance", close_px),
+                trigger_price=res_px,
                 close=close_px,
                 volume=item.get("volume", 0),
                 rs_rank=item.get("mrs"),
-                swing_high=item.get("resistance"),
-                pct_from_trigger=item.get("distance_sma_pct"),
+                swing_high=res_px,
+                pct_from_trigger=item.get(
+                    "distance_breakout_pct", item.get("distance_sma_pct", 0.0)
+                ),
                 fill_price_est=close_px,
                 hard_stop=hard_stop_px,
                 trailing_stop=item.get("trailing_stop"),
@@ -193,10 +228,10 @@ def run_scanner_pipeline(
 
         return ScannerRunResponse(
             strategy="weinstein_etf",
-            mode="UNIVERSE",
-            market_label="US_ETFS",
+            mode=mode,
+            market_label="US_CUSTOM" if mode == "CUSTOM_FILE" else "US_ETFS",
             market_status="ACTIVE",
-            total_universe_count=296,
+            total_universe_count=total_universe_count,
             scanned_count=len(raw_candidates),
             buy_today=stage2_buys,
             near_buys=[],

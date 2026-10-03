@@ -12,6 +12,7 @@ import {
   BarChart2,
 } from "lucide-react";
 import Elder75mChartModal from "@/components/Elder75mChartModal";
+import WeinsteinWeeklyChartModal from "@/components/WeinsteinWeeklyChartModal";
 
 interface SignalItem {
   status: string;
@@ -60,6 +61,7 @@ function ResultsContent() {
   // Modal State
   const [chartModalSymbol, setChartModalSymbol] = useState<string | null>(null);
 
+  const strategy = searchParams.get("strategy") || data?.strategy || "";
   const market = (searchParams.get("market") || "US").toUpperCase() as
     | "NSE"
     | "US";
@@ -75,14 +77,11 @@ function ResultsContent() {
     const symbols = Array.from(new Set(currentList.map((item) => item.ticker)));
 
     try {
-      const res = await fetch(
-        "/api/v1/sync/intraday-symbols",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ symbols, market }),
-        },
-      );
+      const res = await fetch("/api/v1/sync/intraday-symbols", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbols, market }),
+      });
 
       if (!res.ok) {
         console.error("Fast sync failed:", await res.text());
@@ -97,9 +96,7 @@ function ResultsContent() {
   const fetchSignals = async () => {
     setLoading(true);
     try {
-      const res = await fetch(
-        `/api/v1/scanner/run?${searchParams.toString()}`,
-      );
+      const res = await fetch(`/api/v1/scanner/run?${searchParams.toString()}`);
       if (res.ok) {
         const json: ScannerRunResponse = await res.json();
         setData(json);
@@ -302,7 +299,11 @@ function ResultsContent() {
                         </td>
                         <td className="py-3 px-2 text-center">
                           <button
-                            title="View 75m RGB Chart"
+                            title={
+                              strategy === "weinstein_etf"
+                                ? "View Weekly Weinstein Chart"
+                                : "View 75m RGB Chart"
+                            }
                             onClick={(e) => {
                               e.stopPropagation();
                               setChartModalSymbol(item.ticker);
@@ -479,15 +480,22 @@ function ResultsContent() {
         </div>
       </div>
 
-      {/* 75-Minute Chart Viewer Modal */}
-      {chartModalSymbol && (
-        <Elder75mChartModal
-          symbol={chartModalSymbol}
-          market={market}
-          isOpen={!!chartModalSymbol}
-          onClose={() => setChartModalSymbol(null)}
-        />
-      )}
+      {/* Dynamic Chart Viewer Modal */}
+      {chartModalSymbol &&
+        (strategy === "weinstein_etf" ? (
+          <WeinsteinWeeklyChartModal
+            symbol={chartModalSymbol}
+            isOpen={!!chartModalSymbol}
+            onClose={() => setChartModalSymbol(null)}
+          />
+        ) : (
+          <Elder75mChartModal
+            symbol={chartModalSymbol}
+            market={market}
+            isOpen={!!chartModalSymbol}
+            onClose={() => setChartModalSymbol(null)}
+          />
+        ))}
     </div>
   );
 }
